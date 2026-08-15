@@ -46,8 +46,9 @@
 
 ### Implementation status
 
-- **Implemented**: health endpoint (§2.0), error envelope, `/api/v1` versioning, `/docs`.
-- **Planned (Phase 2 milestones)**: everything in §2.1–§2.6 and §3–§5. Contracts below are
+- **Implemented**: health endpoint (§2.0), error envelope, `/api/v1` versioning, `/docs`,
+  media upload (§2.2c), scans (§2.3).
+- **Planned (later milestones)**: the rest of §2.1–§2.6 and §3–§5. Contracts below are
   the target; exact fields freeze when each endpoint ships.
 
 ---
@@ -99,59 +100,73 @@ Response: { "data": { "access_token": "jwt...", "token_type": "bearer", "expires
 
 ### 2.2 Media
 
-Planned (secure upload workflow — later milestone):
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/api/v1/media/upload` | user | Upload media (multipart `file`); validates + fingerprints — IMPLEMENTED (Phase 3) |
+| GET | `/api/v1/media/{media_id}` | user | Media record — planned |
+| DELETE | `/api/v1/media/{media_id}` | user | Delete media + storage (owner/admin) — planned |
+
+Implementation details and full contract: §2.2c below.
+
+### 2.2a Media — Temporary Creation Endpoint (REMOVED, Phase 3)
+
+The Phase 2 minimal JSON endpoint `POST /api/v1/media` was removed when the real
+upload workflow landed. There is exactly one way to create a Media record: the
+secure upload endpoint below. Clients can no longer supply `storage_path`,
+`sha256`, or dimensions.
+
+### 2.2c Media — Secure Upload (IMPLEMENTED, Phase 3)
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/api/v1/media/upload` | user | Upload media (multipart `file`); validates + fingerprints |
-| GET | `/api/v1/media/{media_id}` | user | Media record |
-| DELETE | `/api/v1/media/{media_id}` | user | Delete media + storage (owner/admin) |
+| POST | `/api/v1/media/upload` | none (auth later) | Multipart upload; validates content, fingerprints, stores, creates Media record |
 
-**POST /api/v1/media/upload** (planned)
+**POST /api/v1/media/upload**
+
+```
+Request: multipart/form-data, single field `file`
+         (the file bytes; the client Content-Type and filename are NOT trusted)
+```
+
+Accepted formats (server-side detected; explicit allowlist):
+
+| Format | MIME (detected) | Extensions |
+| --- | --- | --- |
+| JPEG | `image/jpeg` | `.jpg` `.jpeg` `.jpe` |
+| PNG | `image/png` | `.png` |
+| WebP | `image/webp` | `.webp` |
+
+Video (MP4 and others) is rejected at this milestone — no video pipeline yet.
+
+Size limit: `MAX_UPLOAD_SIZE_MB` (default 50). Streamed check; oversized → 400.
+
 ```json
-Request: multipart/form-data, field `file`
 Response 201: {
   "data": {
-    "id": "uuid", "original_name": "photo.jpg", "size_bytes": 123456,
-    "mime_type": "image/jpeg", "format": "JPEG", "width": 4000, "height": 3000,
-    "sha256": "abc...", "perceptual_hash": "d64f...", "duration_seconds": null,
-    "is_valid": true, "created_at": "..."
-  }
+    "id": "uuid", "original_filename": "photo.jpg",
+    "media_type": "IMAGE", "mime_type": "image/jpeg",
+    "size_bytes": 123456, "sha256": "abc...", "width": 4000, "height": 3000,
+    "is_deleted": false, "created_at": "..."
+  },
+  "error": null, "meta": { "request_id": null, "pagination": null }
 }
 ```
-Errors: 400 `UNSUPPORTED_TYPE`, `INVALID_CONTENT`, `FILE_TOO_LARGE`, `EMPTY_FILE`.
 
-### 2.2a Media — Minimal Creation Endpoint (IMPLEMENTED, Phase 2)
+`storage_path` and any filesystem detail are NEVER returned.
 
-Temporary internal endpoint for the vertical slice. NO file upload, NO validation
-pipeline, NO fingerprinting — creates the persistence record only. Replaced by the
-secure upload workflow in a later milestone.
+Validation errors (400, envelope `error.code`):
 
-| Method | Path | Auth | Description |
-| --- | --- | --- | --- |
-| POST | `/api/v1/media` | none (auth later) | Create media record from metadata |
+| Code | Meaning |
+| --- | --- |
+| `EMPTY_FILE` | Zero-byte upload |
+| `FILE_TOO_LARGE` | Exceeds `MAX_UPLOAD_SIZE_MB` |
+| `UNSUPPORTED_TYPE` | Content not in the allowlist (e.g. GIF, video) |
+| `INVALID_CONTENT` | Corrupt/unrecognized bytes, or extension/content mismatch |
+| `INVALID_FILENAME` | Missing/unsafe/too-long filename (traversal, backslash, >255 bytes) |
 
-**POST /api/v1/media**
-```json
-Request: {
-  "original_filename": "sample.png",
-  "media_type": "IMAGE | VIDEO | UNKNOWN",
-  "storage_path": "s3://bucket/ref-123",
-  "mime_type": "image/png",          // optional
-  "size_bytes": 2048,                // optional
-  "sha256": "a"*64,                  // optional, must match ^[0-9a-fA-F]{64}$
-  "width": 640, "height": 480        // optional
-}
-Response 201: {
-  "data": { "id": "uuid", "original_filename": "sample.png", "media_type": "IMAGE",
-            "mime_type": "image/png", "size_bytes": 2048, "sha256": "...",
-            "width": 640, "height": 480, "is_deleted": false, "created_at": "..." }
-}
-```
-Notes:
-- `storage_path` is accepted on input but NEVER returned on read responses.
-- `original_filename` is recorded but never trusted (not used for storage paths).
-- Errors: 422 `VALIDATION_ERROR` for malformed body (e.g. invalid sha256).
+MIME-spoofing policy: the detected (server-side) MIME type is authoritative and
+stored; the client `Content-Type` is ignored. Filename extension must match
+detected content.
 
 ### 2.3 Scans
 
@@ -372,8 +387,9 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 
 ## 6. Validation Rules (shared contract)
 
-- Media: max size `MAX_UPLOAD_SIZE_MB` (default 100); allowed MIME + extension matrix;
-  content sniffing required (magic bytes); SHA-256 and perceptual hash computed server-side.
+- Media: max size `MAX_UPLOAD_SIZE_MB` (default 50); allowlist JPEG/PNG/WebP (video deferred);
+  content sniffing required (magic bytes + safe parse); SHA-256 computed server-side from raw
+  bytes; detected MIME authoritative; filename extension must match detected content.
 - Pagination caps: `page_size` 1..100 (default 20).
 - Auth: access token TTL default 60 min; refresh flow out of v1 scope.
 - Errors: machine-readable `code` stable; add codes, never rename existing ones.
@@ -385,3 +401,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-15 | Phase 0 baseline: contracts for auth, media, scans, results, assessment, reports, admin, AI/ML, reports |
 | 2026-08-15 | Phase 1: health endpoint contract (implemented), error code list, implementation-status markers for planned sections |
 | 2026-08-15 | Phase 2: implement POST/GET /api/v1/media (minimal creation, no upload); POST /api/v1/scans, GET /api/v1/scans/{id}, GET /api/v1/scans (paginated, status filter); scan lifecycle statuses + state machine; 11 canonical pipeline stages |
+| 2026-08-16 | Phase 3: replace POST /api/v1/media with POST /api/v1/media/upload (multipart, secure ingestion); error codes EMPTY_FILE/FILE_TOO_LARGE/UNSUPPORTED_TYPE/INVALID_CONTENT/INVALID_FILENAME; max size default 50 MB; allowlist JPEG/PNG/WebP; MIME-spoofing policy; upload contract §2.2c |

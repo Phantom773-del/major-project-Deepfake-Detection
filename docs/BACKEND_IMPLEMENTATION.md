@@ -303,6 +303,166 @@ tests `test_{models,migrations,repositories,scan_service,api_scans}.py`, docs.
 
 ---
 
+## 2c. Phase 3 — Secure Media Ingestion & Fingerprinting (implementation status 2026-08-16)
+
+Replaces the Phase 2 temporary JSON media-creation endpoint with a real upload
+workflow. Scope: safe ingestion + byte-level fingerprinting only. No AI analysis,
+no metadata intelligence, no attribution, no forensics.
+
+### Upload architecture
+
+```
+Client
+  ↓ multipart POST /api/v1/media/upload
+API route (thin, app/api/v1/endpoints/media.py)
+  ↓
+MediaService.create_from_upload()        (app/services/media.py)
+  ↓ validate filename
+  ↓ stream to temp file + size limit + SHA-256 (one pass)
+  ↓ detect content: magic bytes + Pillow safe parse (threaded)
+  ↓ reject extension/content mismatch
+  ↓ persist to storage under generated name (threaded)
+  ↓ insert Media row + commit
+  ↓ on commit failure: best-effort delete stored file
+StorageProvider (app/media/storage.py)
+  ↓
+LocalStorageProvider (filesystem)        ← future: S3/object storage provider
+```
+
+The route only wires an `UploadFile` into the service; all business logic lives in
+`MediaService`. The service owns its own short transaction (no request-scoped
+session), so cleanup semantics stay self-contained.
+
+### StorageProvider abstraction
+
+- `StorageProvider` protocol: `persist(source: Path, *, name: str) -> str`,
+  `delete(ref: str) -> None`. Returns an internal storage reference string.
+- `LocalStorageProvider` initial implementation:
+  - files written under the configured `media_storage_root`;
+  - `persist` rejects any name that is not a single safe path component
+    (`name == Path(name).name`), preventing traversal even from generated names;
+  - `os.replace` (atomic move) from the temp dir into storage.
+- Storage is never inside the source package (`storage/` is root-anchored
+  gitignored). Cloud/object storage deliberately deferred; swapping providers
+  requires no media-domain changes.
+
+### Validation strategy (ordering)
+
+1. Filename: non-empty, single path component (no `/`, `\`), ≤ 255 UTF-8 bytes.
+   Stored as metadata only — never used to build a filesystem path.
+2. Size: streamed in 64 KB chunks against `max_upload_size_bytes`; the stream is
+   cut off the moment the limit is exceeded (never fully buffered).
+3. Content detection (authoritative, server-side): magic-byte signature, then
+   Pillow `Image.open(...)` + `verify()` for safe parse; dimensions from the
+   decoded image header. Parser exceptions are converted to a sanitized
+   `INVALID_CONTENT` error — internals never leak.
+4. Extension match: filename suffix must be in the detected format's allowlist
+   (e.g. `PNG → {.png}`). Mismatch → `INVALID_CONTENT`.
+5. The client `Content-Type` is never trusted: detected MIME type is what is
+   stored, regardless of the client header. A client MIME that conflicts with
+   actual content does not fail the upload on its own — the detected type and the
+   extension rule are the enforcement point.
+
+### Supported media formats (explicit allowlist)
+
+| Format | MIME | Extensions | Media type |
+| --- | --- | --- | --- |
+| JPEG | `image/jpeg` | `.jpg` `.jpeg` `.jpe` | IMAGE |
+| PNG | `image/png` | `.png` | IMAGE |
+| WebP | `image/webp` | `.webp` | IMAGE |
+
+Video is NOT supported at this milestone: there is no real video pipeline in the
+system yet, so MP4 is rejected rather than silently accepted. Accepting a format
+the pipeline cannot process would be dishonest ingestion.
+
+### Size policy
+
+- Config: `MAX_UPLOAD_SIZE_MB` (default 50 MB dev-conservative), exposed as
+  `max_upload_size_bytes`. Not hard-coded in the route.
+- Oversized uploads → 400 `FILE_TOO_LARGE`.
+
+### SHA-256 fingerprint
+
+- Computed over the raw uploaded bytes (streamed, chunked — never loaded whole),
+  one pass while writing the temp file. Independent of filename/MIME/metadata/pixels.
+- Populates `Media.sha256` (existing indexed column).
+- **Meaning:** equal SHA-256 = identical file bytes. It does NOT mean identical
+  visual content and must never be claimed as such.
+
+### Duplicate policy
+
+**Allow duplicates; each upload creates a separate Media record.** Chosen because
+(1) simplest and least surprising, (2) preserves auditability (each upload is an
+independent event with its own provenance), (3) near-duplicate/visual-matching is
+a later forensics concern, not ingestion. Documented — no silent dedup semantics.
+
+### Image dimensions
+
+`width`/`height` come from server-side decode. Client-supplied dimensions do not
+exist in the API at all (nothing to trust). Video dimensions deferred until a
+real video ingestion path exists.
+
+### Temp files
+
+- Temp files live under `<media_storage_root>/tmp/` with `mkstemp`-generated
+  `upload-*` names (never user filenames).
+- Always removed in a `finally`; on success the file was already atomically moved
+  into storage, so the unlink is a no-op.
+- No partially-uploaded file is ever treated as completed media.
+
+### Transaction / failure semantics (honest)
+
+Ordering: validate → fingerprint → write file → insert row → commit.
+
+| Failure | Behavior |
+| --- | --- |
+| Validation/detection fails | temp file removed; nothing permanent written |
+| Storage fails | no DB insert happens (no committed record); temp removed |
+| DB commit fails after storage | stored file is deleted best-effort; error re-raised |
+
+Filesystem + PostgreSQL are NOT atomically consistent: if the process dies in the
+window between `persist` and `commit`, an orphan file can remain. This is an
+acknowledged limitation; all handled failure paths clean up, an orphan-sweep job
+is future work.
+
+### Security controls
+
+- Untrusted-input posture: size limit, magic-byte + safe parse, generated storage
+  names (UUID hex + detected extension), path-traversal rejection, no arbitrary
+  paths, no executable storage semantics (media root is data-only).
+- Sanitized errors: `MediaUploadError` maps to stable codes; parser internals and
+  server paths never reach the client.
+- `storage_path` is internal only — never returned in `MediaRead`.
+- No file contents or absolute paths in logs.
+
+### API surface
+
+`POST /api/v1/media/upload` (multipart) — see `docs/API_CONTRACTS.md` §2.2c. The
+temporary `POST /api/v1/media` was removed; there is exactly one way to create a
+Media record and the client cannot supply `storage_path`, `sha256`, or dimensions.
+
+### Error codes (upload)
+
+`EMPTY_FILE`, `FILE_TOO_LARGE`, `UNSUPPORTED_TYPE`, `INVALID_CONTENT`,
+`INVALID_FILENAME` (all 400 `VALIDATION_FAILURE` family, via `MediaUploadError`).
+
+### Object-storage migration path
+
+Implement a second `StorageProvider` (S3-compatible). `persist` returns an object
+key instead of a relative path; `Media.storage_path` already stores an opaque
+internal reference, so no media-domain or API changes are needed. Local temp-file
+flow stays identical.
+
+### Completed work (files)
+
+`app/media/{storage,detection,hashing}.py`, `app/services/media.py`,
+`app/api/v1/endpoints/media.py` (upload route), `app/schemas/media.py`
+(`MediaRead` only), `app/core/config.py` (storage/size/allowlist settings),
+`app/domain/exceptions.py` (`MediaUploadError`), `.env.example`,
+tests `test_{media_upload,api_scans,config}.py`, `tests/conftest.py`, docs.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |

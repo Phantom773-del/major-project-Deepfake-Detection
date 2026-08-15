@@ -40,6 +40,7 @@ Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` 
 - `app/db/migrations/env.py` imports every model (via `app/db/models`) so `alembic revision --autogenerate` diffs the real schema; after adding a model, import it there too.
 - Tests apply migrations to `phantom_test` automatically (session fixture in `tests/conftest.py`); never add tables to test DB by hand.
 - Domain status changes (e.g. scan lifecycle) go through the state machine in `app/domain/scan.py` and the service layer — never set status directly in API routes.
+- Media ingestion: client Content-Type/filename are never trusted; server-side content detection is authoritative; storage refs are internal only (`storage_path` never returned); SHA-256 means identical bytes, never identical visual content.
 
 ## Documentation
 
