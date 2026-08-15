@@ -223,6 +223,21 @@ from `VALIDATING` and `PROCESSING`. `FAILED` is terminal (no retry support yet).
 Status is only changed through the scan lifecycle service — never via these
 endpoints.
 
+**Execution (IMPLEMENTED, Phase 4)** — a scan is not analyzed by `POST /scans`.
+It must be advanced to `QUEUED` by the service layer, after which the analysis
+worker claims it (`FOR UPDATE SKIP LOCKED`), runs the pipeline, and finalizes it:
+
+- `COMPLETED`: `validate` + `fingerprint` stages are `COMPLETED` (real results,
+  fingerprint `result_ref` = JSON `{"sha256", "d_hash", "size_bytes"}`);
+  all unregistered future stages are `SKIPPED` with
+  `error_message: "'<name>' stage not implemented in this build"`.
+- `FAILED`: e.g. stored file missing (`"stored media file is missing"`) or
+  stored-content hash mismatch (`"stored media sha256 mismatch"`); `error_message`
+  set on the scan and the failing stage.
+- Worker is opt-in (`ANALYSIS_WORKER_ENABLED=true`); in-process v1, replaceable
+  by Celery. Stage rows expose `status`, `error_message`, `result_ref`,
+  `duration_ms`.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -402,3 +417,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-15 | Phase 1: health endpoint contract (implemented), error code list, implementation-status markers for planned sections |
 | 2026-08-15 | Phase 2: implement POST/GET /api/v1/media (minimal creation, no upload); POST /api/v1/scans, GET /api/v1/scans/{id}, GET /api/v1/scans (paginated, status filter); scan lifecycle statuses + state machine; 11 canonical pipeline stages |
 | 2026-08-16 | Phase 3: replace POST /api/v1/media with POST /api/v1/media/upload (multipart, secure ingestion); error codes EMPTY_FILE/FILE_TOO_LARGE/UNSUPPORTED_TYPE/INVALID_CONTENT/INVALID_FILENAME; max size default 50 MB; allowlist JPEG/PNG/WebP; MIME-spoofing policy; upload contract §2.2c |
+| 2026-08-16 | Phase 4: scan execution path documented (worker claims QUEUED, pipeline runs validate+fingerprint, COMPLETED/FAILED semantics, SKIPPED reasons, result_ref JSON for fingerprint); worker opt-in flag; replaceable in-process worker |

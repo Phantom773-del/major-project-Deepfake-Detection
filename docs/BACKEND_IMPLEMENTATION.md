@@ -463,6 +463,115 @@ tests `test_{media_upload,api_scans,config}.py`, `tests/conftest.py`, docs.
 
 ---
 
+## 2d. Phase 4 — Analysis Worker, Pipeline Runner, Fingerprint Stage (implementation status 2026-08-16)
+
+Moves the scan lifecycle from creation (`CREATED`) through a real execution path:
+`CREATED → VALIDATING → QUEUED → PROCESSING → COMPLETED/FAILED`. Implements the
+in-process worker, the stage registry/pipeline runner, and the `validate` +
+`fingerprint` stages with real behavior. No AI detection, forensics, metadata
+intelligence, or XAI in this milestone — those stages are `SKIPPED` with an
+explicit reason, never faked.
+
+### Flow
+
+```
+POST /api/v1/media/upload ──> Media row (Phase 3)
+POST /api/v1/scans        ──> Scan CREATED + 11 PENDING ScanStage rows
+[manual/queue trigger]    ──> ScanService.transition → VALIDATING → QUEUED
+AnalysisWorker.run_once   ──> claim oldest QUEUED scan (FOR UPDATE SKIP LOCKED)
+                                 └─> transition → PROCESSING (committed atomically)
+ScanExecutionService      ──> load PROCESSING scan, run pipeline, finalize
+PipelineRunner            ──> iterate STAGE_ORDER; run registered, SKIP the rest
+  validate   ──> media_type check, storage resolve, file exists, sha256 match
+  fingerprint──> re-hash stored file, dHash (64-bit), size → result_ref JSON
+ScanExecutionService      ──> COMPLETED (or FAILED with client-safe message)
+```
+
+### Worker design (`app/workers/queue.py`)
+
+- `AnalysisWorker` (v1): in-process scheduling loop, replaceable by Celery later
+  (AGENTS rule). Methods: `run_once` (claim + execute one scan, returns 0/1),
+  `run_until_idle` (test/tooling helper), `run_forever` (poll loop for the app
+  task, catches and logs per-iteration exceptions).
+- **Claiming is race-safe**: `SELECT ... WHERE status = 'QUEUED' ORDER BY
+  created_at LIMIT 1 FOR UPDATE OF scans SKIP LOCKED` (with `joinedload(media)` +
+  `selectinload(stages)`). Locking only `scans` (not the joined side — PostgreSQL
+  rejects `FOR UPDATE` on the nullable side of an outer join), so even multiple
+  worker processes could never claim the same scan. The claim then transitions
+  `QUEUED → PROCESSING` and commits before handing off.
+- `ScanExecutionService` (`app/services/execution.py`) owns one transaction per
+  scan: loads the claimed scan, requires `PROCESSING` (raises `ConflictError`
+  otherwise), runs the pipeline, then finalizes `COMPLETED` or `FAILED`
+  (`PipelineFailure` → client-safe message; unexpected exceptions → generic
+  "unexpected pipeline failure"). Both paths commit.
+- Opt-in via `ANALYSIS_WORKER_ENABLED` (default `false`) so the API never
+  auto-processes by surprise; poll interval `ANALYSIS_WORKER_POLL_INTERVAL_SECONDS`
+  (default 1.0s). Enabled in `app/main.py` lifespan as a cancelled-on-shutdown
+  `asyncio` task.
+
+### Stage contract (`app/workers/stages/base.py`)
+
+- `Stage` protocol: `name: str` + `async run(ctx: StageContext) -> StageResult | None`.
+- `StageContext`: scan, media, storage (`StorageProvider`), settings.
+- `StageError`: a stage-local failure; message is client-safe. The runner
+  translates it into a `FAILED` stage row with `error_message` set.
+- `StageResult(result_ref)`: optional JSON pointer stored on the stage row.
+- New stages register through `StageRegistry.register(stage)` (rejects duplicate
+  names) and `build_default_registry()` composes the active set. A stage in
+  `STAGE_ORDER` with no registered implementation is marked `SKIPPED` with
+  `"'<name>' stage not implemented in this build"` — explicit, never fabricated.
+
+### Implemented stages (real behavior)
+
+- **validate** (`app/workers/stages/validate.py`): media must be `IMAGE`
+  (videos unsupported this milestone); storage ref resolves inside the storage
+  root (traversal rejected); the stored file exists; `sha256_of_file` matches
+  `Media.sha256` exactly.
+- **fingerprint** (`app/workers/stages/fingerprint.py`): re-hashes the stored
+  file chunked (SHA-256), computes a 64-bit dHash
+  (`app/media/perceptual.py`, pure Pillow: grayscale → 9×8 LANCZOS → adjacent-pixel
+  comparison → 16-hex-char string), records `size_bytes`. Result written as
+  `result_ref` JSON `{"sha256", "d_hash", "size_bytes"}`.
+- dHash is structural similarity only — never proof of identical provenance, and
+  never presented as forensic truth (scientific-honesty rule).
+
+### Failure semantics (honest)
+
+- Missing stored file → `validate` fails → scan `FAILED` with
+  `"stored media file is missing"`; the failed stage carries the message.
+- Stored-file SHA-256 mismatch vs the media record → scan `FAILED` with
+  `"stored media sha256 mismatch"` (defensive integrity check, covered by test).
+- Failure is terminal (state machine has no retry path in v1). An unexpected
+  exception mid-pipeline leaves `PROCESSING` un-finalized only if the process
+  crashes before the finalizer; the row stays `PROCESSING` (orphan) and the next
+  worker will not re-claim it — documented limitation for the in-process worker.
+
+### Testing (95 tests total)
+
+- `tests/test_worker.py`: registry contents/duplicate rejection; pipeline order;
+  claim → COMPLETED with validate+fingerprint COMPLETED and other stages SKIPPED
+  (with explicit reason); fingerprint `result_ref` is real JSON; idle returns 0;
+  non-`QUEUED` scans ignored; each scan processed exactly once (incl. two
+  concurrent workers via `asyncio.gather` — SKIP LOCKED guarantees no double
+  claim); `PROCESSING` scans never re-claimed; missing-file and sha256-mismatch
+  → FAILED; `execute` on non-PROCESSING raises `ConflictError`; full API path
+  (upload → create scan → transition → worker → GET COMPLETED).
+- `tests/test_perceptual.py`: determinism, 16-hex format, different images →
+  different hashes (gradients, since solid fills hash identically).
+- `ScanRepository.get` is authoritative (`populate_existing`) — reloads reflect
+  worker mutations even within one long-lived session.
+
+### Completed work (files)
+
+`app/workers/{queue,runner,registry}.py`, `app/workers/stages/{base,validate,fingerprint}.py`,
+`app/services/execution.py`, `app/media/perceptual.py`,
+`app/repositories/scan.py` (`result_ref` + authoritative get),
+`app/services/scans.py` (`mark_stage(..., result_ref)`), `app/main.py`
+(opt-in worker task), `app/core/config.py` (worker settings), `.env.example`,
+tests `test_{worker,perceptual,config}.py`, docs.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -908,3 +1017,5 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | --- | --- |
 | 2026-08-15 | Phase 0 baseline: architecture blueprint, repo/environment inspection, AGENTS.md, API_CONTRACTS.md |
 | 2026-08-15 | Phase 1 foundation: uv project, config, logging, exceptions, app factory, health API, async SQLAlchemy + Alembic baseline, Docker Compose PostgreSQL, pytest/ruff/mypy green. Runtime locked to Python 3.14. |
+| 2026-08-16 | Phase 3 secure media ingestion: upload endpoint, server-side detection, streaming SHA-256, storage provider, size/format/extension policy (see §2c). |
+| 2026-08-16 | Phase 4 analysis worker + pipeline: in-process worker with `FOR UPDATE SKIP LOCKED` claiming, stage registry/runner, `validate` + `fingerprint` stages (dHash), lifecycle to COMPLETED/FAILED, opt-in worker in app lifespan, 95 tests green (see §2d). |

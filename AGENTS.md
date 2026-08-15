@@ -20,6 +20,7 @@ Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` 
 
 - Classifier confidence is NOT forensic truth. Keep separate: `verified evidence`, `model inference`, `heuristic evidence`, `unknown`.
 - Never fabricate evidence, heatmaps, accuracy values, datasets, or results.
+- Pipeline stages must never fabricate results. An unimplemented stage is marked `SKIPPED` with an explicit reason ("not implemented in this build") — never a placeholder that looks like real output. A stage may only write `result_ref` with data it actually computed.
 - Label uncertain output: "likely", "possible", "strong/weak evidence", "insufficient evidence", "unknown".
 - Never claim exact generator/checkpoint/seed/prompt recovery without a real evidence source.
 - Placeholder analysis that looks like real evidence is forbidden. If a module does not compute real output, say so.
