@@ -5,6 +5,8 @@ These are integration tests against the real PostgreSQL test database
 running via ``docker compose up -d postgres``.
 """
 
+from pathlib import Path
+
 from app.db.base import Base
 from app.db.session import SessionFactory, engine
 from sqlalchemy import text
@@ -23,6 +25,7 @@ async def test_session_factory_runs_query() -> None:
 
 
 async def test_base_metadata_create_and_drop() -> None:
+    """create_all/drop_all round-trip must not corrupt the migrated schema."""
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     try:
@@ -30,7 +33,15 @@ async def test_base_metadata_create_and_drop() -> None:
             tables = await connection.execute(
                 text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
             )
-            assert tables.all() == []
+            assert len(tables.all()) >= 5
     finally:
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.drop_all)
+        # drop_all removes domain tables; alembic_version still records head so
+        # re-apply must reset it first, otherwise later tests see no schema.
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        from alembic import command
+        from alembic.config import Config
+
+        command.upgrade(Config(str(Path(__file__).resolve().parent.parent / "alembic.ini")), "head")
