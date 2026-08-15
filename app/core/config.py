@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     )
     allowed_video_mime_types: tuple[str, ...] = ()
 
+    # Analysis worker (in-process v1; replaceable by Celery later)
+    analysis_worker_enabled: bool = False
+    analysis_worker_poll_interval_seconds: float = 1.0
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

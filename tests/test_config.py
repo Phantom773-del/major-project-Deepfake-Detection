@@ -14,6 +14,8 @@ def test_defaults() -> None:
     assert settings.access_token_expire_minutes == 60
     assert settings.storage_dir.name == "storage"
     assert settings.report_dir.name == "reports"
+    assert settings.analysis_worker_enabled is False
+    assert settings.analysis_worker_poll_interval_seconds == 1.0
 
 
 def test_environment_override(monkeypatch: pytest.MonkeyPatch) -> None:

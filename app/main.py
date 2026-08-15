@@ -1,5 +1,6 @@
 """FastAPI application factory for PHANTOM PHOENIX Backend."""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import dispose_engine
+from app.workers.queue import build_default_worker
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +35,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger.info(
             "Starting %s v%s (%s)", settings.app_name, settings.app_version, settings.app_env
         )
-        yield
-        await dispose_engine()
-        logger.info("Shutdown complete")
+        worker_task: asyncio.Task[None] | None = None
+        if settings.analysis_worker_enabled:
+            worker_task = asyncio.create_task(build_default_worker(settings).run_forever())
+            logger.info("analysis worker started")
+        try:
+            yield
+        finally:
+            if worker_task is not None:
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
+            await dispose_engine()
+            logger.info("Shutdown complete")
 
     app = FastAPI(
         title=settings.app_name,
