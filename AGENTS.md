@@ -5,8 +5,8 @@ Persistent engineering instructions for coding sessions on this repository.
 ## Project
 
 PHANTOM PHOENIX — Digital Media Authenticity & AI Forensic Intelligence Platform.
-Backend: FastAPI + PostgreSQL (SQLAlchemy 2.x + Alembic).
-Python 3.14 managed with `uv`.
+Backend: FastAPI + PostgreSQL (async SQLAlchemy 2.x + Alembic; sync engine for migrations).
+Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` must pass.
 
 ## Git rules
 

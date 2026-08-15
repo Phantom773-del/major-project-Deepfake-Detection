@@ -43,19 +43,109 @@ Never fabricate evidence, heatmaps, accuracy, datasets, or results.
 | Working directory | `/home/hari007/Projects/git projects/MainProject/Backend` (project root, not nested) |
 | Git | initialized, remote `origin` = `https://github.com/Phantom773-del/major-project-Deepfake-Detection` |
 | Branches | `main` (current work branch) and `backend` (kept separate by team-leader instruction) |
-| Last commit | `6c37daf` `chore: add .gitignore for backend project` |
 | Python | 3.14.6 (`/usr/bin/python3`), pip 26.0.1 |
 | Package manager | uv 0.12.2 (`/home/hari007/.local/bin/uv`) |
 | Docker | 29.6.2, Compose 5.3.1; `postgres:16-alpine` image already pulled locally |
-| PostgreSQL host service | NOT running — no `psql`, port 5432 closed. Dev DB must run via Docker. |
-| Working tree | clean |
+| PostgreSQL host service | NOT running — no `psql`, port 5432 closed. Dev DB runs via Docker. |
+| Working tree | clean (Phase 1 committed) |
 
 ### Tooling decisions
 
 - **uv** for dependency management + virtual environments (`pyproject.toml` + `uv.lock`).
 - **PostgreSQL via Docker Compose** for all local development and testing.
-- Python 3.14 is very new — pin dependency versions conservatively; verify each native
-  dependency has a 3.14-compatible wheel before relying on it.
+- **Python 3.14** locked as the project runtime (decision below).
+
+### Runtime decision: Python 3.14 (decided 2026-08-15, empirical)
+
+Phase 1 verified compatibility empirically rather than by assumption. The full anticipated
+dependency set was dry-resolved with `uv` against CPython 3.14 and 3.12:
+
+| Dependency | Resolves on 3.14.6 |
+| --- | --- |
+| FastAPI, Pydantic v2, SQLAlchemy 2.x, psycopg3, Alembic, uvicorn | Yes |
+| pytest, pytest-asyncio, httpx, ruff, mypy | Yes |
+| torch 2.13.0, numpy 2.5.2, pillow 12.3.0 (future ML/forensics) | Yes |
+| reportlab, pyjwt, pwdlib, defusedxml, imagehash (future milestones) | Yes |
+
+No 3.14 compatibility blockers found for the current or planned dependency set.
+**Decision: Python 3.14 is the project runtime** for local dev and Docker
+(`requires-python = ">=3.14,<3.15"`, `.python-version` = `3.14`, enforced via uv).
+
+### Package management decision
+
+`uv` only: `pyproject.toml` declares ranges; `uv.lock` pins exact versions; `uv sync --frozen`
+is reproducible. No extra libraries added without a current-milestone need. Quality tooling
+(`ruff`, `mypy`) configured in `pyproject.toml`.
+
+---
+
+## 2a. Phase 1 Foundation — Implementation Status
+
+Status: **COMPLETED and validated** (pytest 17 passed, ruff clean, mypy strict clean,
+Alembic upgrade applied, live uvicorn `/api/v1/health` → 200).
+
+### Sync vs async decision: ASYNC (decided 2026-08-15)
+
+The application uses the **async SQLAlchemy 2.x stack with psycopg3** (`create_async_engine`,
+`async_sessionmaker`, `AsyncSession`). Rationale: consistent async FastAPI architecture,
+psycopg3 supports async cleanly, ML work later runs in worker threads anyway. Alembic
+migrations use a **sync engine** (`app/db/migrations/env.py`) sourcing the same URL from
+settings — standard practice, documented.
+
+### What was implemented
+
+- **Project skeleton**: all Phase 0 packages created under `app/` with minimal `__init__.py`
+  (no fake implementations). `alembic.ini`, `docker-compose.yml`, `.env.example`, README.
+- **Application factory** `create_app()` (`app/main.py`): metadata/title/version, v1 router
+  mount, CORS middleware, exception handlers, lifespan (runtime dirs on start, engine
+  dispose on shutdown). Global `app = create_app()` for uvicorn.
+- **Configuration** (`app/core/config.py`): pydantic-settings `Settings` + `get_settings()`
+  singleton; env-driven; categories for app/db/auth/storage/http. `.env.example` committed;
+  no `.env` ever.
+- **Logging** (`app/core/logging.py`): minimal console handler; never logs secrets, tokens,
+  media contents or full request bodies.
+- **Exceptions** (`app/domain/exceptions.py`, `app/api/errors.py`): `AppError` base with
+  stable `code`/`status_code`; `NotFoundError`, `ConflictError`, `ValidationFailure`;
+  envelope responses; 500 sanitized (stack logged, never returned). Registered handlers for
+  `AppError`, `RequestValidationError`, Starlette `HTTPException`, and `Exception`.
+- **API versioning**: `/api/v1` prefix; `GET /api/v1/health` returns the envelope contract.
+- **Database foundation** (`app/db/base.py`, `app/db/session.py`): `Base` with naming
+  convention, async `engine` + `SessionFactory`, `get_db` dependency, `dispose_engine`.
+  Transaction boundary: one `AsyncSession` per request via the dependency.
+- **Alembic**: `alembic.ini` + `app/db/migrations/` (env.py sync engine, `Base.metadata`
+  target); baseline revision `98d0662cb87f` applied; `alembic upgrade head` verified.
+- **Docker dev env**: `docker compose up -d postgres` → `postgres:16-alpine`, named volume,
+  port 5432, env-driven credentials, healthcheck (verified healthy).
+- **Testing** (`tests/`): app factory, health contract, config loading, DB infrastructure
+  (real `phantom_test` PG), exception behavior. `pytest` 17 passed.
+- **Linting/typing**: `ruff` (E,F,I,UP,B,S) and `mypy --strict` (pydantic plugin) pass.
+
+### Future provider boundaries (documented now, not implemented)
+
+- **DetectionProvider** — runs a detector model, returns normalized predictions
+  (task, label, confidence, model name/version, limitations, `is_simulation` flag).
+- **XAIProvider** — produces real explainability artifacts (e.g., Grad-CAM) + summaries;
+  never synthesized heatmaps.
+- **ForensicProvider** — computes visual forensic signals; returns evidence records
+  (module, category, strength, evidence_type, location, limitations).
+- **AttributionProvider** — returns attribution class + confidence + method from a
+  validated evidence source; never claims exact generator without evidence.
+
+All four are consumed through stable backend/domain schemas (`app/schemas/`), never
+model-specific internal objects, so frontend contracts stay stable across model swaps.
+
+### Report architecture rule (documented)
+
+Database/domain data → **Report assembler** → canonical `ForensicReport` DTO → **Renderer**
+→ PDF. The PDF renderer must depend only on the canonical DTO, never directly on database
+models. Implemented in the reports milestone.
+
+### Evidence architecture rule (documented)
+
+Future evidence records must preserve: source, category, result, strength, evidence type,
+reliability, explanation, limitations, method/version, timestamp, and where applicable
+location/region. They must distinguish `VERIFIED_EVIDENCE`, `MODEL_INFERENCE`,
+`HEURISTIC_EVIDENCE`, `UNKNOWN`. Not yet implemented.
 
 ---
 
@@ -444,36 +534,39 @@ LOG_LEVEL=INFO
 
 Order = critical path. Each milestone = tests + docs + commit + push to `main`.
 
-1. **chore(backend)**: scaffold FastAPI project, uv/pyproject, config, logging, app factory, health endpoint.
-2. **chore(db)**: SQLAlchemy engine/session/Base, Alembic, `users` + `model_versions` + migrations.
-3. **feat(auth)**: register/login/me, JWT, password hashing, role guards.
-4. **feat(db)**: `media`, `scans`, `scan_stages`, `metadata_results`, `detection_results`, `forensic_evidence`, `attribution_results`, `xai_results`, `risk_assessments`, `verdicts`, `reports`, `audit_logs` + migrations.
-5. **feat(media)**: upload validation + storage + fingerprinting + API.
-6. **feat(metadata)**: EXIF/XMP extraction + analyzer.
-7. **feat(scan)**: scan lifecycle + worker queue + runner skeleton.
-8. **feat(inference)**: detector interface + registry + baseline detector (clearly labeled).
-9. **feat(forensics)**: ELA + noise + frequency modules with honest labeling.
-10. **feat(evidence)**: evidence aggregation + confidence engine.
-11. **feat(risk/verdict)**: risk + verdict engines.
-12. **feat(report)**: report builder + PDF.
-13. **feat(admin)**: admin APIs (users, scans, models, stats).
-14. **test**: full suite pass (unit/service/api/db/security/pipeline/reports).
-15. **chore(docker)**: Dockerfile + compose + entrypoint + README runbook.
-16. **docs**: freeze API_CONTRACTS, finalize BACKEND_IMPLEMENTATION.
+0. ✅ **chore(backend) [PHASE 1 COMPLETE]**: uv project, config, logging, app factory,
+   health endpoint, exception model, async SQLAlchemy + Alembic foundation, Docker Compose
+   PostgreSQL, test/lint/typecheck foundation.
+1. **chore(db)**: SQLAlchemy models `users` + `model_versions` + migrations.
+2. **feat(auth)**: register/login/me, JWT, password hashing, role guards.
+3. **feat(db)**: `media`, `scans`, `scan_stages`, `metadata_results`, `detection_results`, `forensic_evidence`, `attribution_results`, `xai_results`, `risk_assessments`, `verdicts`, `reports`, `audit_logs` + migrations.
+4. **feat(media)**: upload validation + storage + fingerprinting + API.
+5. **feat(metadata)**: EXIF/XMP extraction + analyzer.
+6. **feat(scan)**: scan lifecycle + worker queue + runner skeleton.
+7. **feat(inference)**: detector interface + registry + baseline detector (clearly labeled).
+8. **feat(forensics)**: ELA + noise + frequency modules with honest labeling.
+9. **feat(evidence)**: evidence aggregation + confidence engine.
+10. **feat(risk/verdict)**: risk + verdict engines.
+11. **feat(report)**: report builder + PDF.
+12. **feat(admin)**: admin APIs (users, scans, models, stats).
+13. **test**: full suite pass (unit/service/api/db/security/pipeline/reports).
+14. **chore(docker)**: Dockerfile + compose + entrypoint + README runbook.
+15. **docs**: freeze API_CONTRACTS, finalize BACKEND_IMPLEMENTATION.
 
 ## 23. Dependencies (initial)
 
-Runtime: `fastapi`, `uvicorn[standard]`, `pydantic-settings`, `sqlalchemy[asyncio]` (or sync
-engine for v1 simplicity — decision at implementation), `psycopg`/`psycopg[binary]`,
-`alembic`, `python-multipart`, `pillow`, `numpy`, `pydlib`+`argon2-cffi` (or `pwdlib[argon2]`),
-`pyjwt`, `defusedxml`, `reportlab`, `httpx`.
-Dev: `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `pre-commit` (optional).
+Runtime (installed, Phase 1): `fastapi`, `uvicorn[standard]`, `pydantic-settings`,
+`sqlalchemy[asyncio]`, `psycopg[binary]`, `alembic`.
+Planned future milestones: `python-multipart`, `pillow`, `numpy`, `pwdlib[argon2]`, `pyjwt`,
+`defusedxml`, `reportlab`, `httpx`.
+Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commit` (optional).
 
 > Some optional libs (imagehash) need 3.14 wheels — verify before adding.
 
 ## 24. Risks
 
-- **Python 3.14 wheel availability** for Pillow/NumPy — mitigation: verify early; pin versions.
+- **Python 3.14 wheel availability** — mitigated: empirically verified for current + planned
+  dependency set (incl. torch 2.13.0, numpy 2.5.2, pillow 12.3.0); lockfile pins versions.
 - **No host PostgreSQL** — mitigation: Docker Compose dev DB; CI uses same container.
 - **Scientific-honesty drift** — mitigation: AGENTS.md rules, evidence model enforced in code,
   code review by team lead.
@@ -481,12 +574,14 @@ Dev: `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `pre-commit` (optional).
   surfaced as verified.
 - **Heuristic false positives (ELA/noise)** — mitigation: documented limitations in every
   evidence record; verdict rules weight verified vs heuristic separately.
+- **Starlette/FastAPI 1.6 API churn** — mitigation: pinned via lockfile; exception handling
+  behavior verified against live server + tests.
 - **Scope creep (attribution, advanced forensics)** — mitigation: milestone gating; advanced
   features only after core pipeline works.
 
 ## 25. Open Questions
 
-- Sync vs async SQLAlchemy engine for v1 (decided at implementation based on detector threading).
+- ~~Sync vs async SQLAlchemy engine for v1~~ — **decided: async** (see §2a).
 - Whether Shreyas provides a real detector within Phase 2 or the baseline/simulated path ships first.
 - Final confidence/risk weight tables (frozen at implementation, then documented here).
 - XAI artifact storage layout (decided with frontend heatmap needs).
@@ -498,3 +593,4 @@ Dev: `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `pre-commit` (optional).
 | Date | Change |
 | --- | --- |
 | 2026-08-15 | Phase 0 baseline: architecture blueprint, repo/environment inspection, AGENTS.md, API_CONTRACTS.md |
+| 2026-08-15 | Phase 1 foundation: uv project, config, logging, exceptions, app factory, health API, async SQLAlchemy + Alembic baseline, Docker Compose PostgreSQL, pytest/ruff/mypy green. Runtime locked to Python 3.14. |

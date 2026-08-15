@@ -37,13 +37,44 @@
 
 - Status codes: 200 OK, 201 Created, 400 Validation, 401 Unauthorized, 403 Forbidden,
   404 Not Found, 409 Conflict, 422 Unprocessable (Pydantic), 429 Too Many Requests, 500 Internal.
+- Error codes: stable machine-readable `code` values. Add codes; never rename existing ones.
+  Current: `VALIDATION_ERROR` (400/422), `NOT_FOUND` (404), `CONFLICT` (409),
+  `HTTP_ERROR` (framework/route-level), `INTERNAL_ERROR` (500, sanitized).
 - Pagination (list endpoints): `?page=1&page_size=50` → `meta.pagination` = `{page, page_size, total, pages}`.
 - Timestamps: ISO 8601 UTC (`2026-08-15T12:00:00Z`).
 - All request bodies validated by Pydantic schemas; never DB models directly.
 
+### Implementation status
+
+- **Implemented**: health endpoint (§2.0), error envelope, `/api/v1` versioning, `/docs`.
+- **Planned (Phase 2 milestones)**: everything in §2.1–§2.6 and §3–§5. Contracts below are
+  the target; exact fields freeze when each endpoint ships.
+
 ---
 
 ## 2. Backend ↔ Frontend API
+
+### 2.0 Meta / Health (IMPLEMENTED)
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| GET | `/api/v1/health` | no | Service liveness: identity + status + versions |
+
+**GET /api/v1/health**
+```json
+Response 200: {
+  "data": {
+    "status": "ok",
+    "service": "PHANTOM PHOENIX Backend",
+    "version": "0.1.0",
+    "api_version": "/api/v1"
+  },
+  "error": null,
+  "meta": { "request_id": null, "pagination": null }
+}
+```
+- Liveness only; deliberately independent of database and other subsystems.
+- A readiness mechanism may be added later if deployment needs justify it.
 
 ### 2.1 Auth
 
@@ -287,3 +318,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | Date | Change |
 | --- | --- |
 | 2026-08-15 | Phase 0 baseline: contracts for auth, media, scans, results, assessment, reports, admin, AI/ML, reports |
+| 2026-08-15 | Phase 1: health endpoint contract (implemented), error code list, implementation-status markers for planned sections |
