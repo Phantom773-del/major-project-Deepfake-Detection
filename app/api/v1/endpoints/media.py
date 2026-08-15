@@ -1,31 +1,38 @@
-"""Minimal media endpoints for the vertical slice.
+"""Media ingestion endpoint.
 
-The real secure upload workflow is a later milestone. This endpoint only creates
-the persistence record referenced by scan creation.
+Thin route: delegates the whole workflow to MediaService. Only the real secure
+upload endpoint exists; the temporary metadata-creation endpoint was removed.
 """
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from pathlib import Path
 
-from app.db.models.media import Media
-from app.db.session import get_db
-from app.repositories.media import MediaRepository
+from fastapi import APIRouter, Depends, File, UploadFile, status
+
+from app.core.config import get_settings
+from app.media.storage import LocalStorageProvider
 from app.schemas.common import Envelope
-from app.schemas.media import MediaCreate, MediaRead
+from app.schemas.media import MediaRead
+from app.services.media import MediaService
 
 router = APIRouter(prefix="/media", tags=["media"])
 
+_settings = get_settings()
+
+
+def _media_service() -> MediaService:
+    storage = LocalStorageProvider(Path(_settings.media_storage_root))
+    return MediaService(storage)
+
 
 @router.post(
-    "",
+    "/upload",
     response_model=Envelope[MediaRead],
     status_code=status.HTTP_201_CREATED,
+    summary="Upload and ingest a media file",
 )
-async def create_media(
-    payload: MediaCreate,
-    session: AsyncSession = Depends(get_db),
+async def upload_media(
+    file: UploadFile = File(...),
+    service: MediaService = Depends(_media_service),
 ) -> Envelope[MediaRead]:
-    repo = MediaRepository(session)
-    media = await repo.create(Media(**payload.model_dump()))
-    await session.commit()
+    media = await service.create_from_upload(file=file)
     return Envelope[MediaRead](data=MediaRead.model_validate(media))

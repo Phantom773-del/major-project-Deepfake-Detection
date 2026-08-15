@@ -1,48 +1,46 @@
 """Scan + media API tests via ASGI client (real PostgreSQL)."""
 
 import uuid
-from typing import Any
+from io import BytesIO
 
 from app.domain.scan import STAGE_ORDER
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
+from PIL import Image
 
 
-def _media_payload(**overrides: Any) -> dict[str, Any]:
-    payload = {
-        "original_filename": "sample.png",
-        "media_type": "IMAGE",
-        "storage_path": "s3://bucket/ref-123",
-        "mime_type": "image/png",
-        "size_bytes": 2048,
-        "sha256": "a" * 64,
-        "width": 640,
-        "height": 480,
-    }
-    payload.update(overrides)
-    return payload
+def _png_bytes(width: int = 8, height: int = 6) -> bytes:
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (255, 0, 0)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
-async def test_create_media(client: AsyncClient) -> None:
-    resp = await client.post("/api/v1/media", json=_media_payload())
+async def _upload_media(
+    client: AsyncClient,
+    *,
+    filename: str = "sample.png",
+    content: bytes | None = None,
+    content_type: str | None = None,
+) -> Response:
+    files = {"file": (filename, content if content is not None else _png_bytes(), content_type)}
+    return await client.post("/api/v1/media/upload", files=files)
+
+
+async def test_upload_media(client: AsyncClient) -> None:
+    resp = await _upload_media(client)
     assert resp.status_code == 201
     body = resp.json()
     assert body["error"] is None
     data = body["data"]
     assert data["original_filename"] == "sample.png"
     assert data["media_type"] == "IMAGE"
+    assert data["mime_type"] == "image/png"
+    assert data["width"] == 8
+    assert data["height"] == 6
     assert "storage_path" not in data
 
 
-async def test_create_media_rejects_bad_sha256(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/api/v1/media", json=_media_payload(sha256="not-a-valid-hash")
-    )
-    assert resp.status_code == 422
-    assert resp.json()["data"] is None
-
-
 async def test_create_scan(client: AsyncClient) -> None:
-    media_resp = await client.post("/api/v1/media", json=_media_payload())
+    media_resp = await _upload_media(client)
     media_id = media_resp.json()["data"]["id"]
 
     resp = await client.post("/api/v1/scans", json={"media_id": media_id})
@@ -69,7 +67,7 @@ async def test_create_scan_invalid_media_id_returns_422(client: AsyncClient) -> 
 
 
 async def test_get_scan_detail(client: AsyncClient) -> None:
-    media_resp = await client.post("/api/v1/media", json=_media_payload())
+    media_resp = await _upload_media(client)
     media_id = media_resp.json()["data"]["id"]
     scan_resp = await client.post("/api/v1/scans", json={"media_id": media_id})
     scan_id = scan_resp.json()["data"]["id"]
@@ -89,7 +87,7 @@ async def test_get_scan_not_found(client: AsyncClient) -> None:
 
 
 async def test_list_scans_pagination(client: AsyncClient) -> None:
-    media_resp = await client.post("/api/v1/media", json=_media_payload())
+    media_resp = await _upload_media(client)
     media_id = media_resp.json()["data"]["id"]
     for _ in range(3):
         await client.post("/api/v1/scans", json={"media_id": media_id})
@@ -110,7 +108,7 @@ async def test_list_scans_pagination(client: AsyncClient) -> None:
 
 
 async def test_list_scans_filters_by_status(client: AsyncClient) -> None:
-    media_resp = await client.post("/api/v1/media", json=_media_payload())
+    media_resp = await _upload_media(client)
     media_id = media_resp.json()["data"]["id"]
     await client.post("/api/v1/scans", json={"media_id": media_id})
 

@@ -5,14 +5,19 @@ Point the application at the dedicated ``phantom_test`` database BEFORE importin
 """
 
 import os
+import tempfile
+from pathlib import Path
 
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+psycopg://phantom:phantom@localhost:5432/phantom_test",
 )
 
+MEDIA_ROOT = Path(tempfile.gettempdir()) / "phantom_media_tests"
+os.environ.setdefault("MEDIA_STORAGE_ROOT", str(MEDIA_ROOT))
+
 from collections.abc import AsyncIterator, Iterator  # noqa: E402
-from pathlib import Path  # noqa: E402
+from shutil import rmtree  # noqa: E402
 
 import pytest  # noqa: E402
 from app.main import create_app  # noqa: E402
@@ -22,6 +27,15 @@ from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(scope="session", autouse=True)
+def media_storage_dir() -> Iterator[None]:
+    """Fresh media storage directory for the whole test session."""
+    rmtree(MEDIA_ROOT, ignore_errors=True)
+    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+    yield
+    rmtree(MEDIA_ROOT, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
