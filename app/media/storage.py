@@ -17,6 +17,10 @@ from app.domain.exceptions import MediaUploadError
 class StorageProvider(Protocol):
     """Persistence of uploaded media outside the database."""
 
+    def resolve(self, ref: str) -> Path:
+        """Resolve a reference to a filesystem path, rejecting traversal."""
+        ...
+
     def persist(self, source: Path, *, name: str) -> str:
         """Move ``source`` into storage under the generated ``name``.
 

@@ -66,6 +66,9 @@ class _SessionFactory:
 class _FailingStorage:
     """StorageProvider whose persist always fails."""
 
+    def resolve(self, ref: str) -> Path:
+        return Path(ref)
+
     def persist(self, source: Path, *, name: str) -> str:
         raise OSError("disk full")
 
