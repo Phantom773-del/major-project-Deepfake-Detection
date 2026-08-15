@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.coverage.*
+
+# Tooling / IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Generated artifacts
+reports/
+uploads/
+media/
+models/weights/
+*.log
