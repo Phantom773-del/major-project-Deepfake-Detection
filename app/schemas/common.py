@@ -17,11 +17,20 @@ class ErrorBody(BaseModel):
     details: Any = None
 
 
+class Pagination(BaseModel):
+    """Pagination metadata shared by list endpoints."""
+
+    page: int
+    page_size: int
+    total: int
+    pages: int
+
+
 class Meta(BaseModel):
     """Response metadata."""
 
     request_id: str | None = None
-    pagination: dict[str, int] | None = None
+    pagination: Pagination | None = None
 
 
 class Envelope[T](BaseModel):
