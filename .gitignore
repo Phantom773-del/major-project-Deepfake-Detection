@@ -24,9 +24,15 @@ htmlcov/
 .vscode/
 .DS_Store
 
-# Generated artifacts
-reports/
-uploads/
-media/
-models/weights/
+# Generated artifacts (root-anchored: must not ignore app/media, app/reports)
+/reports/
+/uploads/
+/media/
+/storage/
+/models/weights/
 *.log
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.coverage*
