@@ -15,11 +15,12 @@ class ScanRepository(Repository[Scan]):
     model = Scan
 
     async def get(self, entity_id: uuid.UUID) -> Scan | None:
-        """Fetch a scan with its media and stages eagerly loaded."""
+        """Fetch a scan with its media and stages eagerly loaded (authoritative)."""
         stmt = (
             select(Scan)
             .options(joinedload(Scan.media), selectinload(Scan.stages))
             .where(Scan.id == entity_id)
+            .execution_options(populate_existing=True)
         )
         result = await self.session.scalar(stmt)
         if result is None:
@@ -62,6 +63,7 @@ class ScanRepository(Repository[Scan]):
         *,
         status: StageStatus,
         error: str | None = None,
+        result_ref: str | None = None,
     ) -> ScanStage:
         now = datetime.now(UTC)
         stage.status = status
@@ -76,6 +78,8 @@ class ScanRepository(Repository[Scan]):
                 stage.duration_ms = 0
         if error is not None:
             stage.error_message = error
+        if result_ref is not None:
+            stage.result_ref = result_ref
         await self.session.flush()
         return stage
 

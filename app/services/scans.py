@@ -78,6 +78,7 @@ class ScanService:
         name: str,
         status: StageStatus,
         error: str | None = None,
+        result_ref: str | None = None,
     ) -> ScanStage:
         """Update the status of a stage on a scan; error if unknown stage."""
         stage = next((s for s in scan.stages if s.name == name), None)
@@ -85,4 +86,6 @@ class ScanService:
             raise NotFoundError(f"scan stage {name!r} not found")
         if status is StageStatus.FAILED and error is None:
             raise ConflictError("a failed stage requires an error message")
-        return await self.scans.set_stage_status(stage, status=status, error=error)
+        return await self.scans.set_stage_status(
+            stage, status=status, error=error, result_ref=result_ref
+        )
