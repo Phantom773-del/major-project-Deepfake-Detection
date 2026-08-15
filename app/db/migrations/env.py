@@ -10,6 +10,10 @@ from logging.config import fileConfig
 from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
+
+# Importing the models package registers every model on Base.metadata so Alembic
+# autogenerate can diff the schema. Import order matters for FK resolution.
+from app.db.models import Media, ModelVersion, Scan, ScanStage  # noqa: F401
 from sqlalchemy import create_engine, pool
 
 config = context.config
