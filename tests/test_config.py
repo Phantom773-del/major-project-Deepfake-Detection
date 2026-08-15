@@ -10,7 +10,7 @@ def test_defaults() -> None:
     assert settings.app_version == "0.1.0"
     assert settings.app_env == "development"
     assert settings.api_v1_prefix == "/api/v1"
-    assert settings.max_upload_size_mb == 100
+    assert settings.max_upload_size_mb == 50
     assert settings.access_token_expire_minutes == 60
     assert settings.storage_dir.name == "storage"
     assert settings.report_dir.name == "reports"

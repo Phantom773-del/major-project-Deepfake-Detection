@@ -35,3 +35,11 @@ class ValidationFailure(AppError):
 
     status_code = 400
     code = "VALIDATION_ERROR"
+
+
+class MediaUploadError(ValidationFailure):
+    """Upload validation failure with a stable machine-readable code."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code

@@ -41,8 +41,23 @@ class Settings(BaseSettings):
 
     # Storage
     storage_dir: Path = Path("storage")
+    media_storage_root: Path = Path("storage/media")
     report_dir: Path = Path("reports")
-    max_upload_size_mb: int = 100
+    max_upload_size_mb: int = 50
+
+    # Upload allowlists (server-side detection is authoritative; client
+    # Content-Type / filename extension are never trusted).
+    # Video list is empty until a real video ingestion pipeline exists.
+    allowed_image_mime_types: tuple[str, ...] = (
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    )
+    allowed_video_mime_types: tuple[str, ...] = ()
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        return self.max_upload_size_mb * 1024 * 1024
 
     # HTTP
     cors_origins: list[str] = [
