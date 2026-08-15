@@ -37,6 +37,9 @@ Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` 
 
 - Every implemented feature needs real tests (unit/service/API/database/security). Never claim tests pass unless executed.
 - PostgreSQL for dev runs via Docker Compose (`postgres:16-alpine`). Host PG is not running.
+- `app/db/migrations/env.py` imports every model (via `app/db/models`) so `alembic revision --autogenerate` diffs the real schema; after adding a model, import it there too.
+- Tests apply migrations to `phantom_test` automatically (session fixture in `tests/conftest.py`); never add tables to test DB by hand.
+- Domain status changes (e.g. scan lifecycle) go through the state machine in `app/domain/scan.py` and the service layer — never set status directly in API routes.
 
 ## Documentation
 

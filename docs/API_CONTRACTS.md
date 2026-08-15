@@ -99,13 +99,15 @@ Response: { "data": { "access_token": "jwt...", "token_type": "bearer", "expires
 
 ### 2.2 Media
 
+Planned (secure upload workflow — later milestone):
+
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | POST | `/api/v1/media/upload` | user | Upload media (multipart `file`); validates + fingerprints |
 | GET | `/api/v1/media/{media_id}` | user | Media record |
 | DELETE | `/api/v1/media/{media_id}` | user | Delete media + storage (owner/admin) |
 
-**POST /api/v1/media/upload**
+**POST /api/v1/media/upload** (planned)
 ```json
 Request: multipart/form-data, field `file`
 Response 201: {
@@ -119,29 +121,92 @@ Response 201: {
 ```
 Errors: 400 `UNSUPPORTED_TYPE`, `INVALID_CONTENT`, `FILE_TOO_LARGE`, `EMPTY_FILE`.
 
-### 2.3 Scans
+### 2.2a Media — Minimal Creation Endpoint (IMPLEMENTED, Phase 2)
+
+Temporary internal endpoint for the vertical slice. NO file upload, NO validation
+pipeline, NO fingerprinting — creates the persistence record only. Replaced by the
+secure upload workflow in a later milestone.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/api/v1/scans` | user | Create scan for media |
-| GET | `/api/v1/scans/{scan_id}` | user | Scan + status + stage progress |
-| GET | `/api/v1/scans` | user | List my scans (paginated, filter by status) |
-| POST | `/api/v1/scans/{scan_id}/cancel` | user | Cancel queued/processing scan |
-| GET | `/api/v1/scans/{scan_id}/results` | user | All result groups for a scan |
+| POST | `/api/v1/media` | none (auth later) | Create media record from metadata |
 
-**POST /api/v1/scans**
+**POST /api/v1/media**
 ```json
-Request:  { "media_id": "uuid", "scan_type": "image" | "video", "options": { "run_forensics": true, "run_xai": false } }
+Request: {
+  "original_filename": "sample.png",
+  "media_type": "IMAGE | VIDEO | UNKNOWN",
+  "storage_path": "s3://bucket/ref-123",
+  "mime_type": "image/png",          // optional
+  "size_bytes": 2048,                // optional
+  "sha256": "a"*64,                  // optional, must match ^[0-9a-fA-F]{64}$
+  "width": 640, "height": 480        // optional
+}
 Response 201: {
-  "data": { "id": "uuid", "media_id": "uuid", "status": "QUEUED", "scan_type": "image",
-            "stages": [], "error_message": null, "created_at": "..." }
+  "data": { "id": "uuid", "original_filename": "sample.png", "media_type": "IMAGE",
+            "mime_type": "image/png", "size_bytes": 2048, "sha256": "...",
+            "width": 640, "height": 480, "is_deleted": false, "created_at": "..." }
+}
+```
+Notes:
+- `storage_path` is accepted on input but NEVER returned on read responses.
+- `original_filename` is recorded but never trusted (not used for storage paths).
+- Errors: 422 `VALIDATION_ERROR` for malformed body (e.g. invalid sha256).
+
+### 2.3 Scans
+
+Planned: cancel, results endpoints (later milestones). Marked below: what exists.
+
+| Method | Path | Auth | Description | Status |
+| --- | --- | --- | --- | --- |
+| POST | `/api/v1/scans` | user | Create scan for media | **IMPLEMENTED** |
+| GET | `/api/v1/scans/{scan_id}` | user | Scan + status + stage progress | **IMPLEMENTED** |
+| GET | `/api/v1/scans` | user | List my scans (paginated, filter by status) | **IMPLEMENTED** |
+| POST | `/api/v1/scans/{scan_id}/cancel` | user | Cancel queued/processing scan | planned |
+| GET | `/api/v1/scans/{scan_id}/results` | user | All result groups for a scan | planned |
+
+**POST /api/v1/scans** (IMPLEMENTED)
+```json
+Request:  { "media_id": "uuid" }
+Response 201: {
+  "data": {
+    "id": "uuid", "media_id": "uuid", "status": "CREATED",
+    "started_at": null, "completed_at": null, "error_message": null,
+    "created_at": "...",
+    "media": { /* MediaRead, see §2.2a */ },
+    "stages": [ { "id": "uuid", "scan_id": "uuid", "name": "validate",
+                  "status": "PENDING", "sequence": 0, "started_at": null,
+                  "completed_at": null, "duration_ms": null,
+                  "error_message": null, "result_ref": null }, "... (11 stages)" ]
+  }
+}
+```
+Behavior: creates the case record only. NO media upload, NO AI analysis. The 11
+pipeline stages are created PENDING in canonical order
+(`validate, fingerprint, metadata, detect, forensics, xai, evidence, confidence,
+risk, verdict, report`).
+Errors: 404 `NOT_FOUND` (media_id unknown), 422 `VALIDATION_ERROR`.
+
+**GET /api/v1/scans/{id}** (IMPLEMENTED)
+```json
+Response 200: same shape as POST response (full detail: media + stages).
+Errors: 404 `NOT_FOUND`.
+```
+
+**GET /api/v1/scans** (IMPLEMENTED)
+```json
+Query: page (>=1, default 1), page_size (1..100, default 20), status (optional ScanStatus)
+Response 200: {
+  "data": [ /* ScanRead (no stages/media detail) */ ],
+  "meta": { "pagination": { "page": 1, "page_size": 20, "total": 42, "pages": 3 } }
 }
 ```
 
-**GET /api/v1/scans/{id}** — adds live `stages`:
-```json
-"stages": [ { "stage": "validate", "status": "COMPLETED", "started_at": "...", "completed_at": "..." } ]
-```
+Scan lifecycle statuses (state machine in `app/domain/scan.py`):
+`CREATED → VALIDATING → QUEUED → PROCESSING → COMPLETED`, with `FAILED` reachable
+from `VALIDATING` and `PROCESSING`. `FAILED` is terminal (no retry support yet).
+Status is only changed through the scan lifecycle service — never via these
+endpoints.
 
 ### 2.4 Results
 
@@ -319,3 +384,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | --- | --- |
 | 2026-08-15 | Phase 0 baseline: contracts for auth, media, scans, results, assessment, reports, admin, AI/ML, reports |
 | 2026-08-15 | Phase 1: health endpoint contract (implemented), error code list, implementation-status markers for planned sections |
+| 2026-08-15 | Phase 2: implement POST/GET /api/v1/media (minimal creation, no upload); POST /api/v1/scans, GET /api/v1/scans/{id}, GET /api/v1/scans (paginated, status filter); scan lifecycle statuses + state machine; 11 canonical pipeline stages |

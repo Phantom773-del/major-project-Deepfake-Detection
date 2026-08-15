@@ -149,6 +149,160 @@ location/region. They must distinguish `VERIFIED_EVIDENCE`, `MODEL_INFERENCE`,
 
 ---
 
+## 2b. Phase 2 — Core Domain Persistence (implementation status 2026-08-15)
+
+First real vertical slice: domain models → DB → Alembic migration → repository →
+service → schema → API → tests. Establishes the persistent forensic case record.
+Pipeline results/evidence/assessment tables are NOT created yet (later milestones).
+
+### Entity responsibilities
+
+| Entity | Responsibility |
+| --- | --- |
+| `ModelVersion` | Registered AI/ML model version (name, version, task, framework, status, JSONB configuration). Multiple versions of one model name coexist; `(name, version)` unique. No accuracy claims stored. |
+| `Media` | Metadata record for uploaded media (filename, media type, MIME, size, SHA-256, dimensions, storage reference, deletion state). Binary never in PG. `original_filename` recorded but never trusted. |
+| `Scan` | Central forensic case record: one analysis request against one Media. Orchestration only — pipeline results live in later tables. Owns lifecycle status + failure info + timestamps. |
+| `ScanStage` | Per-pipeline-stage row (name, status, sequence, timestamps, duration_ms, error, optional result_ref). Rows, not schema → new stages addable without migration. |
+
+### Relationships
+
+```text
+Media
+  ↓ 1:N  (scans.media_id FK RESTRICT)
+Scan
+  ↓ 1:N  (scan_stages.scan_id FK CASCADE, delete-orphan)
+ScanStage
+
+ModelVersion  (independent registry — no FK from core tables yet)
+```
+
+`Scan.media` unidirectional from Scan side. `Scan.stages` ordered by `sequence`
+(`cascade=all, delete-orphan`). No unnecessary bidirectional relationships.
+
+### Schema (migration `0dfc71182341`, on `Base.metadata`)
+
+- `model_versions`: id uuid pk, name(128), version(64), task(64), framework(64)?
+  status enum `model_version_status`(ACTIVE/DEPRECATED/ARCHIVED), configuration JSONB,
+  created_at, UNIQUE(name, version).
+- `media`: id uuid pk, original_filename(255), media_type enum `media_type`
+  (IMAGE/VIDEO/UNKNOWN), mime_type(127)?, size_bytes?, sha256(64) INDEXED?,
+  width?, height?, storage_path(512), is_deleted bool default false, deleted_at?,
+  created_at.
+- `scans`: id uuid pk, media_id FK `media.id` RESTRICT, status enum `scan_status`
+  (CREATED/VALIDATING/QUEUED/PROCESSING/COMPLETED/FAILED), started_at?,
+  completed_at?, error_message(500)?, created_at, updated_at.
+- `scan_stages`: id uuid pk, scan_id FK `scans.id` CASCADE, name(64), status enum
+  `stage_status` (PENDING/RUNNING/COMPLETED/FAILED/SKIPPED), sequence int,
+  started_at?, completed_at?, duration_ms?, error_message(500)?, result_ref(255)?,
+  created_at, UNIQUE(scan_id, name).
+
+Conventions preserved: UUID PKs generated app-side, `timestamptz` (timezone-aware
+UTC via `DateTime(timezone=True)`), `server_default now()`, native PG enums,
+Alembic-owned schema, sync engine for migrations.
+
+### Scan state machine (`app/domain/scan.py`, single source of truth)
+
+```text
+CREATED ──► VALIDATING ──► QUEUED ──► PROCESSING ──► COMPLETED
+              │                       │
+              └───► FAILED ───────────┘   (terminal, no retry yet)
+```
+
+- Allowed: CREATED→VALIDATING; VALIDATING→{QUEUED, FAILED}; QUEUED→PROCESSING;
+  PROCESSING→{COMPLETED, FAILED}. COMPLETED and FAILED are terminal.
+- Retry policy: NOT supported yet — `FAILED` has no outgoing transitions.
+  Documented decision; retries are a future milestone.
+- Enforced in the service layer (`ScanService.transition`), never in API routes.
+  Invalid transitions raise `ConflictError` → 409 `CONFLICT`.
+
+### Pipeline stage order (`STAGE_ORDER`)
+
+`validate, fingerprint, metadata, detect, forensics, xai, evidence, confidence,
+risk, verdict, report` — created as PENDING rows at scan creation. Adding a stage
+later = editing one tuple; no migration.
+
+### Migration
+
+- `0dfc71182341 add core domain persistence (model_versions, media, scans, scan_stages)`.
+- Baseline untouched (`98d0662cb87f`). `env.py` now imports all models so
+  autogenerate diffs the real schema.
+- Verified from a clean database state: scratch DB → `alembic upgrade head` →
+  all 4 tables + enums present → dropped.
+
+### Repository design (`app/repositories/`)
+
+- Tiny generic `Repository[T]` base (create, get) — shared by concrete repos.
+- Concrete: `ModelVersionRepository` (list_all, list_active, get_by_name_version),
+  `MediaRepository` (list_all paginated), `ScanRepository` (get with eager
+  media+stages, paginated list + count, add_stage, set_stage_status, set_status).
+- Persistence only; no business rules. Eager loading (`joinedload`/`selectinload`)
+  used in async paths to avoid lazy-load `MissingGreenlet`.
+
+### Service design (`app/services/scans.py`)
+
+`ScanService`: create_scan (validates media exists → 404, builds case + 11 pending
+stages), get_scan (404 if missing), list_scans (paginated, optional status filter),
+transition (state machine + timestamp/error bookkeeping), mark_stage (stage
+status updates; unknown stage → 404; FAILED stage requires error message → 409).
+API routes call service then commit; never set status directly.
+
+### API design (`/api/v1`)
+
+- `POST /api/v1/media` — minimal record creation (no upload). `storage_path` accepted
+  on input, never on output. Replaced by secure upload milestone later.
+- `POST /api/v1/scans` — create case record (201, full detail incl. media + stages).
+- `GET /api/v1/scans/{id}` — detail. 404 `NOT_FOUND` if missing.
+- `GET /api/v1/scans?page&page_size&status` — paginated list, `meta.pagination`.
+- All responses wrapped in `Envelope[T]`; errors enveloped with stable codes.
+
+### Pydantic schemas (`app/schemas/`)
+
+`ModelVersionCreate/Read`, `MediaCreate/Read` (no storage_path on read),
+`ScanCreate`, `ScanRead`, `ScanDetail` (media + stages), `ScanStageRead`, plus
+`Pagination` in `common.py`. ORM models never exposed directly.
+
+### Testing
+
+Real PostgreSQL (`phantom_test`). 51 tests pass (17 Phase 1 + 34 new):
+- Models: creation, relationships, cascade delete, unique `(name, version)`.
+- Migrations: tables, enums and columns exist after upgrade.
+- Repositories: create/get/list/update for all three repos.
+- Service: valid path CREATED→…→COMPLETED, failure transition, paramatised
+  invalid transitions, terminal FAILED (no retry), same-status rejection,
+  stage lifecycle, unknown stage, fail-without-error.
+- API: create media, create scan (201 + 11 stages), get detail, list pagination +
+  status filter, 404 media/scan, 422 validation (bad uuid, bad sha256).
+- Test DB isolated via session migration fixture; schema restored after
+  `create_all/drop_all` round-trip test.
+
+### Decisions
+
+- `(name, version)` unique on model_versions; task is a string (open registry,
+  no enum churn), status is a native enum.
+- Stages as rows keyed by unique `(scan_id, name)` — extensible without migrations.
+- `FAILED` terminal: no retry invented; documented as limitation.
+- Native PG enums via SQLAlchemy `Enum`; `StrEnum` for domain taxonomy.
+- `updated_at` on Scan only (the mutable aggregate); static entities carry
+  `created_at` only.
+
+### Limitations (this milestone)
+
+- No file upload, no SHA-256/fingerprint computation from real files.
+- No AI inference, no result/evidence/assessment tables.
+- No auth; endpoints open (auth is a separate milestone).
+- `FAILED` scans cannot retry.
+- Media `list_all` returns count via separate COUNT query (fine at this scale).
+
+### Completed work (files)
+
+`app/domain/taxonomy.py`, `app/domain/scan.py`, `app/db/base.py` (mixins),
+`app/db/models/{__init__,model_version,media,scan}.py`, `app/repositories/{base,
+model_version,media,scan}.py`, `app/services/scans.py`, `app/schemas/{model_version,
+media,scan}.py`, `app/api/v1/endpoints/{media,scans}.py`, migration `0dfc71182341`,
+tests `test_{models,migrations,repositories,scan_service,api_scans}.py`, docs.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -292,7 +446,7 @@ Backend/
 | `reports` | id, scan_id FK, format (json/pdf), status, content JSONB, file_path, generated_at, created_at |
 | `audit_logs` | id, user_id FK NULL, action, entity_type, entity_id, ip, details JSONB, created_at |
 
-> Only tables actually needed by implemented features are created via migrations. Table set above is the Phase 2 target; nothing is created in Phase 0.
+> Only tables actually needed by implemented features are created via migrations. Table set above is the target; as of Phase 2 only `model_versions`, `media`, `scans`, `scan_stages` exist (migration `0dfc71182341`, see §2b). `users`, results, evidence, assessment, reports, audit tables arrive in later milestones.
 
 ---
 
