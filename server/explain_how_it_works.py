@@ -1,0 +1,70 @@
+import os
+import pickle
+import numpy as np
+from PIL import Image
+
+def explain_pipeline(filepath, label):
+    print("\n" + "="*75)
+    print(f" STEP 1: INGESTING IMAGE: {filepath} ({label})")
+    print("="*75)
+    
+    # 1. Read Image
+    img = Image.open(filepath).convert("RGB")
+    width, height = img.size
+    print(f" Image Dimensions        : {width} x {height} px")
+    print(f" Color Channels          : RGB (8-bit per channel)")
+    
+    # 2. Extract Mathematical Features
+    arr = np.array(img, dtype=np.float32)
+    r_mean, g_mean, b_mean = arr[:, :, 0].mean(), arr[:, :, 1].mean(), arr[:, :, 2].mean()
+    r_std, g_std, b_std = arr[:, :, 0].std(), arr[:, :, 1].std(), arr[:, :, 2].std()
+    
+    gray = 0.2989 * arr[:, :, 0] + 0.5870 * arr[:, :, 1] + 0.1140 * arr[:, :, 2]
+    laplacian = np.abs(gray[1:-1, 1:-1] * 4 - gray[0:-2, 1:-1] - gray[2:, 1:-1] - gray[1:-1, 0:-2] - gray[1:-1, 2:])
+    noise_variance = float(laplacian.var())
+    noise_mean = float(laplacian.mean())
+    
+    fft = np.fft.fft2(gray)
+    fft_shift = np.fft.fftshift(fft)
+    magnitude_spectrum = np.abs(fft_shift)
+    h, w = gray.shape
+    center_h, center_w = h // 2, w // 2
+    
+    high_freq_energy = float(np.sum(magnitude_spectrum) - np.sum(magnitude_spectrum[center_h-20:center_h+20, center_w-20:center_w+20]))
+    total_energy = float(np.sum(magnitude_spectrum)) + 1e-6
+    fft_ratio = high_freq_energy / total_energy
+    
+    print("\n STEP 2: EXTRACTING FORENSIC FEATURE VECTOR")
+    print(f" - Laplacian Noise Variance (PRNU Sensor Check) : {noise_variance:.4f}")
+    print(f" - Laplacian Noise Mean Value                     : {noise_mean:.4f}")
+    print(f" - 2D FFT High-Frequency Energy Ratio             : {fft_ratio:.4f}")
+    print(f" - RGB Channel Mean Values (R, G, B)              : ({r_mean:.1f}, {g_mean:.1f}, {b_mean:.1f})")
+    
+    # 3. Model Inference
+    with open("server/forensic_model.pkl", "rb") as f:
+        clf = pickle.load(f)
+        
+    features = [r_mean, g_mean, b_mean, r_std, g_std, b_std, noise_variance, noise_mean, fft_ratio]
+    probs = clf.predict_proba([features])[0]
+    
+    real_prob = probs[0] * 100
+    fake_prob = probs[1] * 100
+    is_ai = fake_prob >= 50.0
+    
+    print("\n STEP 3: MACHINE LEARNING MODEL EVALUATION")
+    print(f" - Model Trained Weights Evaluated                : Random Forest Classifier (100 Decision Trees)")
+    print(f" - Authentic Probability                          : {real_prob:.1f}%")
+    print(f" - AI Manipulation Probability                     : {fake_prob:.1f}%")
+    print(f" - FINAL CLASSIFICATION VERDICT                   : {'AI_GENERATED (FAKE)' if is_ai else 'AUTHENTIC (REAL)'}")
+    print(f" - RISK ASSESSMENT LEVEL                          : {'CRITICAL RISK' if is_ai else 'LOW RISK'}")
+
+def main():
+    print("==========================================================================")
+    print("        PHANTOM PHOENIX: HOW THE DETECTION ENGINE WORKS UNDER THE HOOD   ")
+    print("==========================================================================")
+    
+    explain_pipeline("server/dataset/val/REAL/real_001.jpg", "GENUINE CAMERA PHOTO")
+    explain_pipeline("server/dataset/val/FAKE/fake_001.jpg", "AI GENERATED DEEPFAKE PHOTO")
+
+if __name__ == "__main__":
+    main()
