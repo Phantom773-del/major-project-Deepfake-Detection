@@ -308,6 +308,58 @@ Contract rules:
   (the message says so explicitly).
 - Metadata presence/absence or any single finding is NOT a verdict.
 
+### 2.3b Detection stage result (IMPLEMENTED, Phase 6)
+
+No new endpoint. The `detect` stage writes a structured `DetectionResult` to its
+`result_ref` (JSON), surfaced through `GET /api/v1/scans/{scan_id}`
+(`data.stages[]`). Deterministic shape; absent values are `null` — never
+placeholders.
+
+```json
+{
+  "detector": {
+    "name": "unavailable",
+    "detector_version": "1",
+    "model_name": null,
+    "model_version": null,
+    "checkpoint_sha256": null,
+    "preprocessing_version": null
+  },
+  "media_type": "IMAGE",
+  "prediction": null,
+  "inference": {
+    "status": "UNAVAILABLE",
+    "reason": "no image detector is registered in this build",
+    "device": "cpu",
+    "duration_ms": 3
+  },
+  "evidence_type": null
+}
+```
+
+With a real model the `prediction` object is:
+
+```json
+{
+  "label": "FAKE",
+  "score": 0.87,
+  "score_semantics": "sigmoid probability",
+  "class_list": ["REAL", "FAKE"]
+}
+```
+
+Contract rules:
+
+- `inference.status` ∈ `AVAILABLE | UNAVAILABLE`. UNAVAILABLE (this build)
+  means no model exists — the pipeline never fabricates a prediction.
+- `score` is in `[0,1]` and MUST be paired with `score_semantics` (how the score
+  is derived; raw logits are never reported as a probability).
+- `evidence_type` is `"INFERENCE"` only when a real prediction exists, else
+  `null`. Model inference is never "verified truth".
+- `detector_version` is the contract version (`"1"`), not a model version;
+  model identity fields are `null` when unknown — never invented.
+- `duration_ms` is measured wall-clock time for the detector call.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -425,25 +477,50 @@ Standard shape for any forensic/evidence record. Frontend renders by `evidence_t
 
 ## 4. Backend ↔ AI/ML Interface
 
-### 4.1 Detector interface (Python, `app/inference/base.py`)
+### 4.1 Detector interface (Python, `app/inference/base.py`, IMPLEMENTED Phase 6)
 
 ```python
-class Prediction(BaseModel):
-    task: str                       # image_detection | video_detection | attribution | xai
-    label: str                      # e.g. "fake" / "real" / class name
-    confidence: float               # 0..1, model confidence, NOT truth probability
-    is_simulation: bool             # True when no real model produced this
-    model_name: str | None
-    model_version: str | None
-    model_metadata: dict            # architecture, checkpoint, preprocessor config
-    limitations: str
-    created_at: datetime
+class DetectorIdentity(BaseModel):
+    name: str
+    detector_version: str = DETECTOR_CONTRACT_VERSION   # "1"
+    model_name: str | None = None
+    model_version: str | None = None
+    checkpoint_sha256: str | None = None
+    preprocessing_version: str | None = None
+
+class DetectionPrediction(BaseModel):
+    label: str                    # min length 1
+    score: float                  # 0..1
+    score_semantics: str          # e.g. "sigmoid probability"; raw logits prohibited
+    class_list: tuple[str, ...] | None = None
+
+class InferenceSummary(BaseModel):
+    status: Literal["AVAILABLE", "UNAVAILABLE"]
+    reason: str | None = None
+    device: str | None = None
+    duration_ms: int | None = None
+
+class DetectionResult(BaseModel):
+    detector: DetectorIdentity
+    media_type: MediaType
+    prediction: DetectionPrediction | None = None
+    inference: InferenceSummary
+    evidence_type: EvidenceType | None = None   # INFERENCE only with a prediction
 
 class Detector(Protocol):
-    id: str
-    supports: set[str]              # tasks it can serve
-    def detect(self, media_path: str, context: dict) -> Prediction: ...
+    name: str
+    media_type: MediaType
+    @property
+    def identity(self) -> DetectorIdentity: ...
+    def detect(self, path: Path, *, device: str) -> DetectionResult: ...
 ```
+
+`DetectorRegistry` (`app/inference/registry.py`) holds detectors by name
+(duplicate names rejected); `find(media_type)` returns the first detector for a
+media type. This build ships `UnavailableDetector` only
+(`app/inference/detectors/`), so `find(IMAGE)` always returns an honest
+UNAVAILABLE result. Future detectors register in
+`build_default_detector_registry()`.
 
 ### 4.2 Model version tracking
 
@@ -489,3 +566,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 3: replace POST /api/v1/media with POST /api/v1/media/upload (multipart, secure ingestion); error codes EMPTY_FILE/FILE_TOO_LARGE/UNSUPPORTED_TYPE/INVALID_CONTENT/INVALID_FILENAME; max size default 50 MB; allowlist JPEG/PNG/WebP; MIME-spoofing policy; upload contract §2.2c |
 | 2026-08-16 | Phase 4: scan execution path documented (worker claims QUEUED, pipeline runs validate+fingerprint, COMPLETED/FAILED semantics, SKIPPED reasons, result_ref JSON for fingerprint); worker opt-in flag; replaceable in-process worker |
 | 2026-08-16 | Phase 5: metadata stage contract §2.3a (extraction/normalization, evidence-classified consistency findings, provenance UNAVAILABLE, result_ref JSON shape); `scan_stages.result_ref` widened to TEXT |
+| 2026-08-16 | Phase 6: detection stage contract §2.3b + AI/ML interface §4.1 implemented (Detector protocol, DetectionResult schema, score_semantics rule, UNAVAILABLE semantics); detector registry; detect stage after metadata |

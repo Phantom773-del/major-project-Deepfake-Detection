@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-16 (Phase 5)
+> Last updated: 2026-08-16 (Phase 6)
 
 ---
 
@@ -689,6 +689,121 @@ tests `test_{metadata,_exif_builder}.py`, docs.
 
 ---
 
+## 2f. Phase 6 — Detection Intelligence (implementation status 2026-08-16)
+
+### Objective
+
+Production-grade detector abstraction: a stable `Detector` contract, an
+ordered `DetectorRegistry`, a structured `DetectionResult` payload, model
+identity/version tracking, and a `detect` pipeline stage that runs after
+`metadata`. Honest UNAVAILABLE state when no model exists — the pipeline never
+fabricates a prediction.
+
+### Reality check (Phase 1 docs ≠ shipped code)
+
+Phase 0 documented a `Prediction`/`Detector` protocol and an EfficientNet-B4
+image detector. At Phase 6 start: `app/inference/__init__.py` was empty, no
+torch/torchvision/numpy in `pyproject.toml`, and no checkpoints/weights existed
+anywhere in the repo. Therefore this phase implements the abstraction plus an
+explicit `UnavailableDetector`; a real model is NOT integrated and is NOT
+claimed to be.
+
+### Detector contract (`app/inference/base.py`)
+
+- `DETECTOR_CONTRACT_VERSION = "1"` — version of the contract, not the model.
+- `DetectorError(message)` — client-safe inference error (message returned as-is
+  in `StageError`; internal tracebacks go to logs only).
+- `DetectorIdentity` — `name`, `detector_version` (defaults to contract version),
+  optional `model_name`, `model_version`, `checkpoint_sha256`,
+  `preprocessing_version`. Identity is never invented: optional fields are
+  `None` unless a real detector supplies them.
+- `DetectionPrediction` — `label` (min length 1), `score` (0..1),
+  `score_semantics` (required, e.g. `"sigmoid probability"` — raw logits are not
+  a probability and are never reported as one), optional `class_list`.
+- `InferenceSummary` — `status` (`AVAILABLE`/`UNAVAILABLE`), `reason`, `device`,
+  `duration_ms`.
+- `DetectionResult` — `detector` (identity), `media_type`, `prediction | None`,
+  `inference`, `evidence_type` (`INFERENCE` only when a real prediction exists;
+  `None` for UNAVAILABLE).
+- `Detector` protocol — `name`, `media_type`, `identity` property, sync
+  `detect(path, *, device) -> DetectionResult` raising `DetectorError`.
+  Inference runs off the event loop via `asyncio.to_thread`; a detector must
+  never block the API event loop.
+
+### Registry (`app/inference/registry.py`)
+
+`DetectorRegistry` mirrors `StageRegistry`: `register` (duplicate name →
+`ValueError`), `get`, `find(media_type)` (first detector serving the type),
+`names`, `__contains__`, `__len__`. No global mutable registry — composed per
+pipeline.
+
+### Detectors (`app/inference/detectors/`)
+
+- `unavailable.py` — `UnavailableDetector`: name `"unavailable"`, media_type
+  IMAGE, always returns `status=UNAVAILABLE`, `prediction=None`,
+  `evidence_type=None`, reason `"no image detector is registered in this build"`,
+  model fields `None`. Honest placeholder, never a fabricated result.
+- `__init__.py` — `build_default_detector_registry()` registers only the
+  UnavailableDetector in this build. Future real detectors register here.
+
+### Detection stage (`app/workers/stages/detect.py`)
+
+- `DetectionStage(name="detect")`; runs after `metadata` per `STAGE_ORDER`.
+- IMAGE-only guard (validate rejects non-IMAGE earlier); storage path resolved
+  and existence-checked (mirrors metadata stage).
+- `detector = detectors.find(media_type)`; `None` → `StageError` (cannot happen
+  with default registry since UnavailableDetector is always registered).
+- Inference via `asyncio.to_thread(detector.detect, path, device=device)`;
+  `device` from `Settings.detection_device` (`"cpu"` MVP; `cuda:N` honored only
+  by detectors that support it).
+- `DetectorError` → `StageError` → stage FAILED / scan FAILED. Unexpected
+  exceptions logged, client-safe message returned.
+- Result serialized to `result_ref` via existing TEXT column — **no new table,
+  no migration** (consistent with metadata stage).
+
+### Decision: no torch dependency
+
+No checkpoint exists to load, so adding torch (~800 MB) was rejected as an
+unjustified dependency. When a real model lands, the dependency is added with
+the model files and the registry gains the real detector.
+
+### Settings
+
+`Settings.detection_device: str = "cpu"` (env `DETECTION_DEVICE`), documented
+in `.env.example`.
+
+### Testing (Phase 6: +20 tests, total 143)
+
+`tests/test_detection.py` with `StubDetector`/`FailingDetector` test doubles:
+contract shape; `DetectionPrediction`/`DetectionResult` validation (empty label,
+score out of range, empty score_semantics rejected); registry register/lookup/
+duplicate/find-by-media-type/unsupported-type; default registry resolves
+UnavailableDetector; unavailable detector never fabricates prediction; stage
+registered after metadata + pipeline order; stage with default registry →
+UNAVAILABLE payload; stage with stub → AVAILABLE prediction; client-safe
+inference failure; video rejected; missing file; CPU device passed through;
+exact `result_ref` structure + determinism; worker e2e (unavailable payload,
+stub prediction, detection error → scan FAILED). `tests/test_worker.py` +
+`tests/test_metadata.py` updated: `detect` is COMPLETED (was SKIPPED).
+
+### Completed work (files)
+
+`app/inference/base.py`, `app/inference/registry.py`,
+`app/inference/detectors/{__init__,unavailable}.py`,
+`app/workers/stages/detect.py`, `app/workers/stages/__init__.py`,
+`app/core/config.py`, `.env.example`, tests `test_detection.py` +
+`test_{worker,metadata}.py` updates, docs.
+
+### Limitations (honest)
+
+- No real detector/model in this build; all detection output is UNAVAILABLE.
+- `evidence_type=INFERENCE` marks model inference only — never treated as
+  verified truth (AGENTS.md scientific-honesty rules).
+- No score calibration, no accuracy claims, no generator/checkpoint recovery.
+- Device selection is per-settings; no auto GPU detection yet.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -1136,3 +1251,5 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-15 | Phase 1 foundation: uv project, config, logging, exceptions, app factory, health API, async SQLAlchemy + Alembic baseline, Docker Compose PostgreSQL, pytest/ruff/mypy green. Runtime locked to Python 3.14. |
 | 2026-08-16 | Phase 3 secure media ingestion: upload endpoint, server-side detection, streaming SHA-256, storage provider, size/format/extension policy (see §2c). |
 | 2026-08-16 | Phase 4 analysis worker + pipeline: in-process worker with `FOR UPDATE SKIP LOCKED` claiming, stage registry/runner, `validate` + `fingerprint` stages (dHash), lifecycle to COMPLETED/FAILED, opt-in worker in app lifespan, 95 tests green (see §2d). |
+| 2026-08-16 | Phase 5 metadata intelligence: EXIF/XMP extraction, analysis payload, metadata stage, EvidenceType, 123 tests green (see §2e). |
+| 2026-08-16 | Phase 6 detection intelligence: Detector contract + registry + UnavailableDetector + detect stage, 143 tests green, pushed to `origin/backend` (see §2f). |
