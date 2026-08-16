@@ -98,6 +98,9 @@ def test_default_registry_has_only_implemented_stages() -> None:
         "forensics",
         "xai",
         "evidence",
+        "confidence",
+        "risk",
+        "verdict",
     ]
     assert registry.get("metadata") is not None
     assert "metadata" in registry
@@ -105,6 +108,9 @@ def test_default_registry_has_only_implemented_stages() -> None:
     assert registry.get("forensics") is not None
     assert registry.get("xai") is not None
     assert registry.get("evidence") is not None
+    assert registry.get("confidence") is not None
+    assert registry.get("risk") is not None
+    assert registry.get("verdict") is not None
 
 
 def test_registry_rejects_duplicate_registration() -> None:
@@ -151,7 +157,13 @@ async def test_worker_processes_queued_scan_to_completed(
     assert by_name["xai"].result_ref is not None
     assert by_name["evidence"].status is StageStatus.COMPLETED
     assert by_name["evidence"].result_ref is not None
-    for future in ("confidence", "risk", "verdict", "report"):
+    assert by_name["confidence"].status is StageStatus.COMPLETED
+    assert by_name["confidence"].result_ref is not None
+    assert by_name["risk"].status is StageStatus.COMPLETED
+    assert by_name["risk"].result_ref is not None
+    assert by_name["verdict"].status is StageStatus.COMPLETED
+    assert by_name["verdict"].result_ref is not None
+    for future in ("report",):
         assert by_name[future].status is StageStatus.SKIPPED
         assert "not implemented" in (by_name[future].error_message or "")
 
@@ -353,3 +365,10 @@ async def test_api_scan_reaches_completed_via_worker(
     assert stages["xai"]["result_ref"] is not None
     assert stages["evidence"]["status"] == "COMPLETED"
     assert stages["evidence"]["result_ref"] is not None
+    assert stages["confidence"]["status"] == "COMPLETED"
+    assert stages["confidence"]["result_ref"] is not None
+    assert stages["risk"]["status"] == "COMPLETED"
+    assert stages["risk"]["result_ref"] is not None
+    assert stages["verdict"]["status"] == "COMPLETED"
+    assert stages["verdict"]["result_ref"] is not None
+    assert stages["report"]["status"] == "SKIPPED"

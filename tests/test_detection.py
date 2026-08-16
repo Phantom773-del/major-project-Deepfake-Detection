@@ -314,6 +314,9 @@ def test_stage_registered_after_metadata() -> None:
         "forensics",
         "xai",
         "evidence",
+        "confidence",
+        "risk",
+        "verdict",
     ]
     implemented = registry.names()
     assert [name for name in STAGE_ORDER if name in registry] == implemented
