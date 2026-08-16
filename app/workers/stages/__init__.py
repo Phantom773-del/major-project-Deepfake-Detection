@@ -13,6 +13,7 @@ from app.workers.stages.evidence import EvidenceAggregationStage
 from app.workers.stages.fingerprint import FingerprintStage
 from app.workers.stages.forensics import VisualForensicsStage
 from app.workers.stages.metadata import MetadataStage
+from app.workers.stages.report import ReportStage
 from app.workers.stages.risk import RiskStage
 from app.workers.stages.validate import ValidateStage
 from app.workers.stages.verdict import VerdictStage
@@ -32,4 +33,5 @@ def build_default_registry() -> StageRegistry:
     registry.register(ConfidenceStage())
     registry.register(RiskStage())
     registry.register(VerdictStage())
+    registry.register(ReportStage())
     return registry
