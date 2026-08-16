@@ -422,6 +422,54 @@ Contract rules:
 - Analyzer parameters are explicit and documented (ELA quality, blur radius,
   frequency band fractions/entropy bins).
 
+### 2.3d XAI stage result (IMPLEMENTED, Phase 8)
+
+No new endpoint. The `xai` stage writes a structured, deterministic payload to
+its `result_ref` (JSON), surfaced through `GET /api/v1/scans/{scan_id}`
+(`data.stages[]`).
+
+This build has no detector model, so the only reachable state is UNAVAILABLE
+(an honest state, not an error — the stage itself COMPLETES):
+
+```json
+{
+  "status": "UNAVAILABLE",
+  "reason": "no detector model produced a prediction; XAI requires a real model inference to explain (detection: no image detector is registered in this build)",
+  "explainer": { "name": "unavailable", "version": "1", "technique": "none", "model_type": null },
+  "model": { "name": null, "version": null, "checkpoint_sha256": null },
+  "heatmap": null,
+  "interpretation": null
+}
+```
+
+Future `COMPLETED` shape (real model + compatible explainer; NOT produced by
+this build):
+
+```json
+{
+  "status": "COMPLETED",
+  "reason": null,
+  "explainer": { "name": "grad-cam-adapter-a", "version": "1", "technique": "grad-cam", "model_type": "efficientnet-b4" },
+  "model": { "name": "efficientnet-b4", "version": "1.0.0", "checkpoint_sha256": "..." },
+  "heatmap": { "available": true, "format": "png", "width": 224, "height": 224, "reference": "internal artifact ref" },
+  "interpretation": { "target_label": "FAKE", "target_score": 0.87, "score_semantics": "sigmoid probability", "summary": "...", "limitation": "..." }
+}
+```
+
+Contract rules:
+
+- `status` ∈ `COMPLETED | UNAVAILABLE`. `UNAVAILABLE` MUST carry `reason`;
+  `COMPLETED` MUST carry explainer + model + heatmap + interpretation.
+- A heatmap is only valid when produced by an actual model execution. No
+  `UNAVAILABLE` payload ever contains a heatmap or a numerical interpretation.
+- `model` always mirrors the detection result's detector identity — the
+  explanation corresponds to the SAME inference, never a separately loaded
+  checkpoint.
+- `target_score` is present only when the detector reported a real score and is
+  always paired with `score_semantics` (same rule as detection).
+- No fabricated activation maps, no region-influence claims without a real
+  model execution, no fake confidence.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -630,3 +678,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 5: metadata stage contract §2.3a (extraction/normalization, evidence-classified consistency findings, provenance UNAVAILABLE, result_ref JSON shape); `scan_stages.result_ref` widened to TEXT |
 | 2026-08-16 | Phase 6: detection stage contract §2.3b + AI/ML interface §4.1 implemented (Detector protocol, DetectionResult schema, score_semantics rule, UNAVAILABLE semantics); detector registry; detect stage after metadata |
 | 2026-08-16 | Phase 7: forensics stage contract §2.3c (measurements-only payload, per-analyzer status, VERIFIED/HEURISTIC findings, no authenticity probability); forensics stage after detect |
+| 2026-08-16 | Phase 8: XAI stage contract §2.3d (UNAVAILABLE when no real detector model; heatmap only from actual model execution; same-inference guarantee); xai stage after forensics |

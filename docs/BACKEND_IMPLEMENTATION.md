@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-16 (Phase 7)
+> Last updated: 2026-08-16 (Phase 8)
 
 ---
 
@@ -973,8 +973,134 @@ tests `test_forensics.py` + `test_{worker,detection,metadata}.py` updates, docs.
   signals on natural images are expected and documented.
 - Frequency bands and entropy bins are module constants (documented, not yet
   settings); only pixel cap, ELA quality, and blur radius are configurable.
-- No video forensics; no XAI/heatmaps (Phase 8); no evidence aggregation
-  (Phase 9).
+- No video forensics; no evidence aggregation (Phase 9).
+
+---
+
+## 2h. Phase 8 — Explainable AI / XAI Engine (implementation status 2026-08-16)
+
+Implements the `xai` pipeline stage: explainability for a *genuine* detector
+inference. The XAI layer answers, once a real model exists, "which regions of
+this image influenced the detector's prediction". Because NO detector model
+exists in this build, every XAI result is honestly `UNAVAILABLE` with an
+explicit reason — the pipeline never fabricates a heatmap.
+
+### Scientific rule (critical)
+
+A heatmap is only valid if it comes from an actual model execution. The XAI
+layer never generates random or visually pleasing placeholder heatmaps, never
+derives "activation maps" from ELA/frequency analysis or arbitrary regions, and
+never claims a region influenced a prediction no model produced. If no
+compatible model exists, XAI status MUST be `UNAVAILABLE` with a clear reason —
+an honest system state, not an error.
+
+### Architecture
+
+```
+app/xai/
+    base.py        XAIError, ExplainerIdentity, XAIModelIdentity, XAIHeatmap,
+                   XAIInterpretation, XAIResult, XAIExplanationContext,
+                   XAIExplainer Protocol
+    registry.py    XAIExplainerRegistry (register/get/find by media_type +
+                   model_type, dup rejected)
+    explainers/
+        __init__.py      build_default_xai_explainer_registry()
+        unavailable.py   UnavailableExplainer (honest UNAVAILABLE fallback)
+app/workers/stages/xai.py   XAIStage
+```
+
+### Explainer contract
+
+- `name`, `version`, `technique` (e.g. `grad-cam`), `media_type`,
+  `model_type` (`None` = any/unavailable fallback).
+- `explain(path, *, context: XAIExplanationContext, settings) -> XAIResult`;
+  raises `XAIError` (client-safe) on failure.
+- Never writes to the database; the stage owns persistence to `result_ref`.
+
+### Same-inference guarantee (critical)
+
+`XAIExplanationContext` carries the exact `DetectionResult` the pipeline
+produced PLUS the exact detector instance that produced it. The stage reads the
+`detect` stage's persisted result from the scan, re-resolves the detector from
+the SAME `DetectorRegistry` by name, and passes that instance to the explainer.
+An explainer never independently loads a checkpoint that differs from the
+detector's real model. Future model-specific adapters (Detector A →
+GradCAMAdapterA, Detector B → GradCAMAdapterB) pull their target layers from the
+detector instance; generic XAI code hard-codes no model internals.
+
+### XAI result contract (see API_CONTRACTS §2.3d for full shape)
+
+```json
+{
+  "status": "UNAVAILABLE",
+  "reason": "no detector model produced a prediction; XAI requires a real model
+             inference to explain (detection: no image detector is registered
+             in this build)",
+  "explainer": { "name": "unavailable", "version": "1",
+                 "technique": "none", "model_type": null },
+  "model": { "name": null, "version": null, "checkpoint_sha256": null },
+  "heatmap": null,
+  "interpretation": null
+}
+```
+
+`COMPLETED` results (future) carry the explainer identity, the model identity
+mirrored from the detection result, `heatmap` (available, format, width,
+height, reference — a real artifact), and `interpretation` (target label, real
+score with `score_semantics`, summary, limitation). No fake values are ever
+included: an `UNAVAILABLE` result has no heatmap and no numerical
+interpretation.
+
+### Stage behavior
+
+- IMAGE-only guard; storage path resolved/existence-checked (mirrors detect).
+- Reads the detect stage's result_ref; missing/unparseable detection → honest
+  `UNAVAILABLE` (never a stage failure).
+- Re-resolves the detector by name; detector missing → `UNAVAILABLE`.
+- Resolves an explainer via `find(media_type, model_name)`: exact
+  `model_type` match wins, else the `model_type=None` unavailable fallback.
+- UnavailableExplainer returns `UNAVAILABLE` with a reason derived from the
+  actual detection state — never a fabricated heatmap/score.
+- Real explainer failure → `StageError` (client-safe), same as detection.
+
+### Grad-CAM status (honest)
+
+Genuine Grad-CAM requires a differentiable model, a target convolutional/
+feature layer, forward activation + gradients for a target score, gradient-
+weighted activation, normalization, and resize to input dimensions. The current
+detector is `UNAVAILABLE` and no model framework (PyTorch/TF) is installed, so
+Grad-CAM is NOT implemented in this build and no fake abstraction pretends to
+perform it. The explainer contract + per-detector adapter pattern is in place;
+the Grad-CAM adapter ships only with a real, compatible detector model.
+
+### Testing (Phase 8: +23 tests, total 203)
+
+`tests/test_xai.py`: XAI result schema validation (status literal, score
+bounds); registry register/lookup/duplicate/find (exact model_type wins, None
+fallback, media type); UnavailableExplainer never fabricates (no heatmap/
+interpretation/score for both unavailable detection and a real stub prediction);
+stage registered after forensics; default stage → COMPLETED with UNAVAILABLE
+payload; no-compatible-explainer UNAVAILABLE mentioning the model; missing/
+unparseable detection → UNAVAILABLE; compatible stub explainer COMPLETED with
+heatmap + same-detector-instance verification; video rejected; missing file;
+explainer failure → client-safe StageError; result_ref structure; determinism;
+worker e2e (default → xai COMPLETED/UNAVAILABLE; stub explainer → COMPLETED
+with heatmap). `tests/test_worker.py`, `tests/test_detection.py`,
+`tests/test_metadata.py` updated for the new stage.
+
+### Completed work (files)
+
+`app/xai/{base,registry}.py`, `app/xai/explainers/{__init__,unavailable}.py`,
+`app/workers/stages/xai.py`, `app/workers/stages/__init__.py`,
+tests `test_xai.py` + `test_{worker,detection,metadata}.py` updates, docs.
+
+### Limitations (honest)
+
+- No real explainer/heatmap in this build; all XAI output is UNAVAILABLE.
+- Grad-CAM requires a real differentiable detector model (future phase).
+- Heatmap artifact persistence/reference mechanics are designed but unexercised
+  until a real explainer exists.
+- `target_score` is only meaningful when the detector reports a real score.
 
 ---
 
@@ -1428,3 +1554,4 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-16 | Phase 5 metadata intelligence: EXIF/XMP extraction, analysis payload, metadata stage, EvidenceType, 123 tests green (see §2e). |
 | 2026-08-16 | Phase 6 detection intelligence: Detector contract + registry + UnavailableDetector + detect stage, 143 tests green, pushed to `origin/backend` (see §2f). |
 | 2026-08-16 | Phase 7 visual forensics engine: ForensicAnalyzer contract + registry, ELA/noise/frequency analyzers, forensics stage after detection, numpy dep, 179 tests green (see §2g). |
+| 2026-08-16 | Phase 8 XAI engine: XAIExplainer contract + registry, UnavailableExplainer (honest UNAVAILABLE, no fabricated heatmaps), xai stage after forensics reusing the same detector instance as detection, 203 tests green (see §2h). |
