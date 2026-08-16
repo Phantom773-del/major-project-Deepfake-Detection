@@ -306,7 +306,13 @@ def test_unavailable_detector_never_fabricates_prediction(tmp_path: Path) -> Non
 
 def test_stage_registered_after_metadata() -> None:
     registry = build_default_registry()
-    assert registry.names() == ["validate", "fingerprint", "metadata", "detect"]
+    assert registry.names() == [
+        "validate",
+        "fingerprint",
+        "metadata",
+        "detect",
+        "forensics",
+    ]
     implemented = registry.names()
     assert [name for name in STAGE_ORDER if name in registry] == implemented
     assert implemented.index("metadata") < implemented.index("detect")
