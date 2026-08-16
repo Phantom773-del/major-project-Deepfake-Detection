@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     analysis_worker_enabled: bool = False
     analysis_worker_poll_interval_seconds: float = 1.0
 
+    # Detection (AI/deepfake inference)
+    # Device for model inference. CPU is the MVP baseline; "cuda"/"cuda:N" is
+    # honored only by detectors that support it. No detector in this build, so
+    # this only affects the reported device field today.
+    detection_device: str = "cpu"
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

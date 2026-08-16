@@ -90,9 +90,10 @@ async def _reload(db_session: AsyncSession, scan_id: uuid.UUID) -> Scan:
 
 def test_default_registry_has_only_implemented_stages() -> None:
     registry = build_default_registry()
-    assert registry.names() == ["validate", "fingerprint", "metadata"]
+    assert registry.names() == ["validate", "fingerprint", "metadata", "detect"]
     assert registry.get("metadata") is not None
     assert "metadata" in registry
+    assert registry.get("detect") is not None
 
 
 def test_registry_rejects_duplicate_registration() -> None:
@@ -131,7 +132,9 @@ async def test_worker_processes_queued_scan_to_completed(
     assert by_name["fingerprint"].result_ref is not None
     assert by_name["metadata"].status is StageStatus.COMPLETED
     assert by_name["metadata"].result_ref is not None
-    for future in ("detect", "forensics", "xai", "evidence",
+    assert by_name["detect"].status is StageStatus.COMPLETED
+    assert by_name["detect"].result_ref is not None
+    for future in ("forensics", "xai", "evidence",
                    "confidence", "risk", "verdict", "report"):
         assert by_name[future].status is StageStatus.SKIPPED
         assert "not implemented" in (by_name[future].error_message or "")
@@ -328,4 +331,5 @@ async def test_api_scan_reaches_completed_via_worker(
     assert stages["validate"]["status"] == "COMPLETED"
     assert stages["fingerprint"]["status"] == "COMPLETED"
     assert stages["metadata"]["status"] == "COMPLETED"
-    assert stages["detect"]["status"] == "SKIPPED"
+    assert stages["detect"]["status"] == "COMPLETED"
+    assert stages["forensics"]["status"] == "SKIPPED"

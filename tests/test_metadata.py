@@ -159,7 +159,7 @@ def _make_worker(tmp_path: Path) -> AnalysisWorker:
 
 def test_default_registry_has_metadata_registered() -> None:
     registry = build_default_registry()
-    assert registry.names() == ["validate", "fingerprint", "metadata"]
+    assert registry.names() == ["validate", "fingerprint", "metadata", "detect"]
     assert registry.get("metadata") is not None
 
 
