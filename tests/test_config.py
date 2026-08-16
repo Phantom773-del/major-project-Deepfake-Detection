@@ -4,7 +4,10 @@ import pytest
 from app.core.config import Settings
 
 
-def test_defaults() -> None:
+def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # conftest redirects STORAGE_DIR for the whole session; drop it so the
+    # default storage layout is asserted.
+    monkeypatch.delenv("STORAGE_DIR", raising=False)
     settings = Settings(_env_file=None)
     assert settings.app_name == "PHANTOM PHOENIX Backend"
     assert settings.app_version == "0.1.0"

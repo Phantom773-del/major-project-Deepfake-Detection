@@ -60,6 +60,7 @@ from app.workers.stages.evidence import EvidenceAggregationStage
 from app.workers.stages.fingerprint import FingerprintStage
 from app.workers.stages.forensics import VisualForensicsStage
 from app.workers.stages.metadata import MetadataStage
+from app.workers.stages.report import ReportStage
 from app.workers.stages.risk import RiskStage
 from app.workers.stages.validate import ValidateStage
 from app.workers.stages.verdict import VerdictStage
@@ -499,6 +500,7 @@ def test_pipeline_registers_decision_stages_after_evidence() -> None:
         "confidence",
         "risk",
         "verdict",
+        "report",
     ]
     implemented = registry.names()
     assert [name for name in STAGE_ORDER if name in registry] == implemented
@@ -519,7 +521,8 @@ async def test_worker_decision_stages_completed_with_honest_results(
     for name in ("confidence", "risk", "verdict"):
         assert by_name[name].status is StageStatus.COMPLETED
         assert by_name[name].result_ref is not None
-    assert by_name["report"].status is StageStatus.SKIPPED
+    assert by_name["report"].status is StageStatus.COMPLETED
+    assert by_name["report"].result_ref is not None
     confidence_payload = json.loads(by_name["confidence"].result_ref or "{}")
     assert confidence_payload["confidence_status"] == "INSUFFICIENT_EVIDENCE"
     assert confidence_payload["value"] is None
@@ -557,7 +560,8 @@ async def test_api_scan_decision_stages_completed(
     assert stages["confidence"]["status"] == "COMPLETED"
     assert stages["risk"]["status"] == "COMPLETED"
     assert stages["verdict"]["status"] == "COMPLETED"
-    assert stages["report"]["status"] == "SKIPPED"
+    assert stages["report"]["status"] == "COMPLETED"
+    assert stages["report"]["result_ref"] is not None
 
 
 def test_decision_stages_reject_video_media(tmp_path: Path) -> None:
@@ -653,6 +657,7 @@ def _worker(tmp_path: Path) -> AnalysisWorker:
     registry.register(ConfidenceStage())
     registry.register(RiskStage())
     registry.register(VerdictStage())
+    registry.register(ReportStage())
     execution = ScanExecutionService(
         registry=registry,
         settings=Settings(media_storage_root=tmp_path),

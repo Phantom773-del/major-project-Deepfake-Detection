@@ -16,6 +16,11 @@ os.environ.setdefault(
 MEDIA_ROOT = Path(tempfile.gettempdir()) / "phantom_media_tests"
 os.environ.setdefault("MEDIA_STORAGE_ROOT", str(MEDIA_ROOT))
 
+# Report artifacts root. ``STORAGE_DIR`` must be redirected too, or the report
+# stage would write ``./storage/reports`` into the repository during tests.
+REPORT_ROOT = Path(tempfile.gettempdir()) / "phantom_report_tests"
+os.environ.setdefault("STORAGE_DIR", str(REPORT_ROOT))
+
 from collections.abc import AsyncIterator, Iterator  # noqa: E402
 from shutil import rmtree  # noqa: E402
 
@@ -31,11 +36,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(scope="session", autouse=True)
 def media_storage_dir() -> Iterator[None]:
-    """Fresh media storage directory for the whole test session."""
+    """Fresh media and report storage directories for the whole test session."""
     rmtree(MEDIA_ROOT, ignore_errors=True)
     MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+    rmtree(REPORT_ROOT, ignore_errors=True)
+    REPORT_ROOT.mkdir(parents=True, exist_ok=True)
     yield
     rmtree(MEDIA_ROOT, ignore_errors=True)
+    rmtree(REPORT_ROOT, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -101,6 +101,7 @@ def test_default_registry_has_only_implemented_stages() -> None:
         "confidence",
         "risk",
         "verdict",
+        "report",
     ]
     assert registry.get("metadata") is not None
     assert "metadata" in registry
@@ -163,9 +164,8 @@ async def test_worker_processes_queued_scan_to_completed(
     assert by_name["risk"].result_ref is not None
     assert by_name["verdict"].status is StageStatus.COMPLETED
     assert by_name["verdict"].result_ref is not None
-    for future in ("report",):
-        assert by_name[future].status is StageStatus.SKIPPED
-        assert "not implemented" in (by_name[future].error_message or "")
+    assert by_name["report"].status is StageStatus.COMPLETED
+    assert by_name["report"].result_ref is not None
 
 
 async def test_fingerprint_result_is_real(
@@ -371,4 +371,5 @@ async def test_api_scan_reaches_completed_via_worker(
     assert stages["risk"]["result_ref"] is not None
     assert stages["verdict"]["status"] == "COMPLETED"
     assert stages["verdict"]["result_ref"] is not None
-    assert stages["report"]["status"] == "SKIPPED"
+    assert stages["report"]["status"] == "COMPLETED"
+    assert stages["report"]["result_ref"] is not None

@@ -461,6 +461,7 @@ def test_stage_registered_after_forensics() -> None:
         "confidence",
         "risk",
         "verdict",
+        "report",
     ]
     implemented = registry.names()
     assert [name for name in STAGE_ORDER if name in registry] == implemented
