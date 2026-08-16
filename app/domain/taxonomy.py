@@ -42,3 +42,21 @@ class MediaType(enum.StrEnum):
     IMAGE = "IMAGE"
     VIDEO = "VIDEO"
     UNKNOWN = "UNKNOWN"
+
+
+class EvidenceType(enum.StrEnum):
+    """Classification of a metadata finding (never stored in the DB enum set).
+
+    VERIFIED:   directly observed in the actual file metadata.
+    INFERENCE:  a conclusion derived from verified metadata.
+    HEURISTIC:  a rule-based interpretation that is suggestive but not conclusive.
+    UNKNOWN:    the available media does not provide enough information.
+
+    Metadata evidence is one forensic signal among many — it never decides
+    REAL / FAKE / AI-GENERATED / MANIPULATED on its own.
+    """
+
+    VERIFIED = "VERIFIED"
+    INFERENCE = "INFERENCE"
+    HEURISTIC = "HEURISTIC"
+    UNKNOWN = "UNKNOWN"
