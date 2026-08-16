@@ -8,6 +8,7 @@ they are never faked.
 
 from app.workers.registry import StageRegistry
 from app.workers.stages.fingerprint import FingerprintStage
+from app.workers.stages.metadata import MetadataStage
 from app.workers.stages.validate import ValidateStage
 
 
@@ -16,4 +17,5 @@ def build_default_registry() -> StageRegistry:
     registry = StageRegistry()
     registry.register(ValidateStage())
     registry.register(FingerprintStage())
+    registry.register(MetadataStage())
     return registry
