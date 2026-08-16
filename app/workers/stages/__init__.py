@@ -8,6 +8,7 @@ they are never faked.
 
 from app.workers.registry import StageRegistry
 from app.workers.stages.detect import DetectionStage
+from app.workers.stages.evidence import EvidenceAggregationStage
 from app.workers.stages.fingerprint import FingerprintStage
 from app.workers.stages.forensics import VisualForensicsStage
 from app.workers.stages.metadata import MetadataStage
@@ -24,4 +25,5 @@ def build_default_registry() -> StageRegistry:
     registry.register(DetectionStage())
     registry.register(VisualForensicsStage())
     registry.register(XAIStage())
+    registry.register(EvidenceAggregationStage())
     return registry
