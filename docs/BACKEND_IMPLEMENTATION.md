@@ -1385,6 +1385,135 @@ evidence result; confidence stage fails safe without evidence result).
 
 ---
 
+## 2k. Phase 11 — Forensic Report Engine (implementation status 2026-08-16)
+
+### Purpose
+
+The final `report` pipeline stage transforms the already-computed, persisted
+outputs of the ten prior stages into a deterministic forensic case report and a
+PDF artifact. The report layer is presentation/composition only:
+
+- it never re-runs detection, metadata extraction, forensics, XAI, or any
+  confidence/risk/verdict calculation;
+- it never reopens the image for analysis;
+- it never modifies evidence, confidence, risk or verdict;
+- it never infers a result that an upstream stage did not produce.
+
+### Architecture
+
+```
+Persisted pipeline results (ScanStage.result_ref)
+        ↓
+app/reports/composer.py   → compose_report(ReportInputs) → ReportDocument
+        ↓
+app/reports/pdf.py        → PDFRenderer.render(document)  → PDF bytes
+        ↓
+app/workers/stages/report.py → LocalStorageProvider(storage_dir/reports)
+```
+
+- `app/reports/domain.py` — the report data model (`ReportDocument`,
+  `Section`, `SectionRow`, `ReportArtifact`, `ReportResult`,
+  `ReportStatus`, `ReportFormat`).
+- `app/reports/composer.py` — pure, deterministic composition from persisted
+  results. Reads typed models (`DetectionResult`, `XAIResult`,
+  `EvidenceResult`, `ConfidenceResult`, `RiskResult`, `VerdictResult`) plus
+  raw payload dicts (fingerprint/metadata/forensics) and scan/media case
+  fields. Missing or unparseable upstream results are reported as unavailable,
+  never inferred.
+- `app/reports/renderer.py` — dependency-free plain-text renderer (tests and
+  console previews).
+- `app/reports/pdf.py` — `PDFRenderer`, formatting only, built on ReportLab
+  (`reportlab>=4.0,<5.0`, added in this phase; no stubs shipped upstream, so
+  a targeted `[[tool.mypy.overrides]]` marks `reportlab.*` as untyped).
+- `app/workers/stages/report.py` — `ReportStage` (IMAGE-only), the 11th and
+  final registered stage.
+
+### Report stage behavior
+
+1. Requires `MediaType.IMAGE` (consistent with the rest of the pipeline).
+2. Reads the ten upstream `result_ref` payloads via the shared
+   `read_stage_json` helper (fail-safe to `None`).
+3. Composes a `ReportDocument` (deterministic; timestamps come only from the
+   persisted scan/media records).
+4. Renders PDF bytes via `PDFRenderer` (`invariant=1` ⇒ byte-deterministic
+   output: no random file ID, no composition timestamp).
+5. Persists the PDF under `storage_dir/reports/{scan_id}.pdf` through
+   `LocalStorageProvider` (same traversal-safe storage abstraction as media).
+6. Persists a `ReportResult` JSON to `ScanStage.result_ref`.
+
+Failure semantics: a PDF render failure or storage persist failure raises
+`StageError` (client-safe) and the scan FAILS — a missing report is never
+silently accepted. A missing upstream stage/result is never an error: it is
+reported as unavailable.
+
+`ReportStatus` has exactly two states: `COMPLETED` and `FAILED`. "Report
+composed" is unrelated to "strong verdict": a report can be `COMPLETED` while
+the verdict is `INSUFFICIENT_EVIDENCE`.
+
+### ReportDocument sections (deterministic order)
+
+Case Information, Executive Summary, Pipeline Status, Fingerprint, Metadata,
+Detection, Visual Forensics, XAI, Evidence Aggregation, Confidence, Risk,
+Verdict. Methodology & Versions and Limitations are rendered from the
+document-level `methodology`/`limitations` fields.
+
+### Scientific honesty rules in the report
+
+- `null` confidence renders as `NOT QUANTIFIED`, never `0` and never a
+  percentage.
+- `UNAVAILABLE` detector/XAI/provenance states render as unavailable with the
+  actual reason — no invented model name, version, checkpoint, score,
+  prediction, heatmap, or suspicious region.
+- A detector model score is presented with its `score_semantics` in the
+  Detection section only — it is never re-labelled as confidence or
+  probability.
+- Risk stays `UNDETERMINED`; verdict stays `INSUFFICIENT_EVIDENCE`; the
+  executive summary is generated strictly from actual result states (e.g.
+  "The available analysis produced insufficient evidence for a stronger
+  authenticity or manipulation conclusion.").
+- The only recommendation is conditional on the actual verdict.
+- No legal claims: the artifact is a "forensic analysis report", never
+  court-admissible evidence or a certification.
+- No fabricated visuals: no fake heatmaps, confidence charts, probability
+  bars, risk gauges or attribution graphs.
+- No filesystem paths, server paths, connection strings, secrets, stack
+  traces or internal storage roots appear in the report or PDF.
+- GPS metadata is reported as presence/absence only (privacy-sensitive) and is
+  never written to logs.
+
+### Determinism
+
+Composition uses only persisted values and explicit ordering (stage order,
+sorted evidence sources, sorted analyzer names, sorted methodology keys);
+duplicate limitations are deduped preserving order. `PDFRenderer` runs with
+ReportLab `invariant=1`. Identical persisted pipeline results produce an
+identical `ReportDocument` and byte-identical PDFs (verified by test).
+
+### Files (new)
+
+`app/reports/{__init__,domain,composer,renderer,pdf}.py`,
+`app/workers/stages/report.py`, `tests/test_reports.py`.
+
+### Files (modified)
+
+`app/workers/stages/__init__.py` (register `ReportStage` — 11 stages, none
+SKIPPED), `pyproject.toml` (reportlab + mypy override), `tests/conftest.py`
+(redirect `STORAGE_DIR` for report artifacts),
+`tests/test_{worker,assessment,detection,metadata,xai,config}.py` (registry
+lists and report-is-no-longer-SKIPPED assertions).
+
+### Limitations (honest)
+
+- Text-only report: no charts, heatmaps or gauges by design (nothing real to
+  draw).
+- PDF artifact is stored only in local storage; no download endpoint exists yet
+  (scan stage `result_ref` exposes the artifact reference).
+- No report versioning beyond `version="1"`; no per-section localization.
+- ReportLab types are not statically checked (no upstream stubs); the wrapper
+  in `app/reports/pdf.py` is the only typed surface.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -1846,3 +1975,4 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-16 | Phase 8 XAI engine: XAIExplainer contract + registry, UnavailableExplainer (honest UNAVAILABLE, no fabricated heatmaps), xai stage after forensics reusing the same detector instance as detection, 203 tests green (see §2h). |
 | 2026-08-16 | Phase 9 evidence aggregation & confidence engine: app/evidence package, evidence stage after xai, honest INSUFFICIENT_EVIDENCE confidence (never fabricated numeric), correlation dedupe, 252 tests green, pushed to `origin/backend` (see §2i). |
 | 2026-08-16 | Phase 10 confidence/risk/verdict engine: app/assessment package (ConfidenceEngine, RiskEngine, VerdictEngine), confidence/risk/verdict stages (10 stages registered, report SKIPPED), fail-safe INSUFFICIENT_EVIDENCE/UNDETERMINED, no numeric confidence/risk/verdict fabrication, §17 rewritten to code-mirrored honest rules, 283 tests green, pushed to `origin/backend` (see §2j). |
+| 2026-08-16 | Phase 11 forensic report engine: report stage consumes real persisted outputs (never re-runs analysis), deterministic ReportDocument composer + ReportLab PDF renderer (`reportlab>=4.0,<5.0`, `invariant=1` byte-deterministic), report stage 11th registered (none SKIPPED), NOT QUANTIFIED/UNAVAILABLE/UNDETERMINED/INSUFFICIENT_EVIDENCE semantics preserved, no fake confidence/heatmap/model identity, storage under `storage_dir/reports`, 326 tests green, pushed to `origin/backend` (see §2k). |

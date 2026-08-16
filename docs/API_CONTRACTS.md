@@ -601,9 +601,113 @@ Contract rules:
 - Decision stages fail safely: a missing/failed/unparseable `evidence` or
   `confidence` result still COMPLETES toward `INSUFFICIENT_EVIDENCE` /
   `UNDETERMINED` — it never fails the scan.
-- `status` is always `COMPLETED` when a decision stage runs; `report` is still
-  SKIPPED in this build.
+- `status` is always `COMPLETED` when a decision stage runs; `report` consumes
+  these results and is described in §2.3g.
 - Deterministic: identical pipeline results produce byte-identical payloads.
+
+### 2.3g Report stage result (IMPLEMENTED, Phase 11)
+
+No new endpoints. The `report` stage consumes the persisted results of the ten
+prior stages (§2.3–§2.3f) — it never re-runs analysis, never re-opens the
+image, and never recomputes confidence/risk/verdict. It writes a
+`ReportResult` to its `result_ref` (JSON) and stores the PDF artifact at
+`storage_dir/reports/{scan_id}.pdf`, surfaced through
+`GET /api/v1/scans/{scan_id}` (`data.stages[]`). Report status is `COMPLETED`
+or `FAILED`; it is unrelated to verdict strength (a `COMPLETED` report can
+carry an `INSUFFICIENT_EVIDENCE` verdict).
+
+```json
+{
+  "status": "COMPLETED",
+  "format": "pdf",
+  "version": "1",
+  "reference": "018f9a77-b2ef-4c1a-8d0f-8a1c2d3e4f5a.pdf",
+  "artifact": {
+    "format": "pdf",
+    "reference": "018f9a77-b2ef-4c1a-8d0f-8a1c2d3e4f5a.pdf",
+    "size_bytes": 5213,
+    "available": true
+  },
+  "document": {
+    "report_version": "1",
+    "case_id": "scan-...",
+    "media_id": "media-...",
+    "created_at": "2026-08-16T11:00:00.000Z",
+    "analyzed_at": "2026-08-16T12:00:00.000Z",
+    "media_type": "IMAGE",
+    "original_filename": "sample.png",
+    "size_bytes": 2048,
+    "mime_type": "image/png",
+    "pipeline_status": "COMPLETED",
+    "summary": "The available analysis produced insufficient evidence for a stronger authenticity or manipulation conclusion. Confidence is not quantified: no validated, calibrated methodology is registered in this build. Risk could not be determined because no directional assessment was established. No detector model was available, so model-based synthetic-generation analysis was not performed. No explainability heatmap was generated because no compatible detector/explainer was available.",
+    "sections": [
+      { "title": "Case Information", "rows": [ { "label": "Case ID", "value": "scan-..." } ], "statements": [] },
+      { "title": "Executive Summary", "rows": [], "statements": ["The available analysis produced insufficient evidence for a stronger authenticity or manipulation conclusion."] },
+      { "title": "Pipeline Status", "rows": [ { "label": "validate", "value": "COMPLETED" } ], "statements": [] },
+      { "title": "Fingerprint", "rows": [ { "label": "SHA-256", "value": "<hex>" } ], "statements": [] },
+      { "title": "Metadata", "rows": [ { "label": "Provenance Status", "value": "UNAVAILABLE" } ], "statements": [] },
+      { "title": "Detection", "rows": [ { "label": "Status", "value": "UNAVAILABLE" } ], "statements": ["No detector model was available; no prediction, score, probability or model identity is reported."] },
+      { "title": "Visual Forensics", "rows": [ { "label": "ela measurements", "value": "{\"ela_mean\": 0.5, \"ela_std\": 0.1}" } ], "statements": [] },
+      { "title": "XAI", "rows": [ { "label": "Status", "value": "UNAVAILABLE" } ], "statements": ["No explainability heatmap was generated."] },
+      { "title": "Evidence Aggregation", "rows": [ { "label": "Source: FINGERPRINT", "value": "AVAILABLE" } ], "statements": [] },
+      { "title": "Confidence", "rows": [ { "label": "Value", "value": "NOT QUANTIFIED" } ], "statements": [] },
+      { "title": "Risk", "rows": [ { "label": "Risk Level", "value": "UNDETERMINED" } ], "statements": [] },
+      { "title": "Verdict", "rows": [ { "label": "Verdict", "value": "INSUFFICIENT_EVIDENCE" } ], "statements": [] }
+    ],
+    "limitations": [
+      "METADATA: C2PA provenance is unavailable: not implemented in this build",
+      "DETECTION: detection produced no model prediction in this build",
+      "XAI: xai produced no model explanation in this build",
+      "DETECTION evidence is unavailable; absence is not negative evidence and cannot reduce confidence",
+      "XAI evidence is unavailable; absence is not negative evidence and cannot reduce confidence",
+      "detector unavailable: no image detector is registered in this build",
+      "XAI unavailable: no detector model produced a prediction; XAI requires a real model inference to explain",
+      "confidence not calibrated: no validated, calibrated methodology is registered in this build",
+      "risk methodology cannot produce a supported level without an established directional assessment",
+      "verdict remains insufficient: not enough validated evidence for a stronger conclusion",
+      "visual forensic measurements are observational and content-dependent",
+      "no face/identity assessment was performed in this build"
+    ],
+    "methodology": {
+      "confidence_methodology_version": "1",
+      "detector": "UNAVAILABLE",
+      "detector_checkpoint_sha256": "UNAVAILABLE",
+      "detector_model": "UNAVAILABLE",
+      "detector_model_version": "UNAVAILABLE",
+      "detector_preprocessing_version": "UNAVAILABLE",
+      "detector_version": "UNAVAILABLE",
+      "forensic_analyzer_versions": "{\"ela\": \"1\", \"frequency\": \"1\", \"noise\": \"1\"}",
+      "report_version": "1",
+      "risk_methodology_version": "1",
+      "verdict_methodology_version": "1",
+      "xai_explainer": "NOT IMPLEMENTED",
+      "xai_explainer_version": "NOT IMPLEMENTED",
+      "xai_technique": "NOT IMPLEMENTED"
+    }
+  },
+  "summary": "The available analysis produced insufficient evidence for a stronger authenticity or manipulation conclusion. Confidence is not quantified: no validated, calibrated methodology is registered in this build. Risk could not be determined because no directional assessment was established. No detector model was available, so model-based synthetic-generation analysis was not performed. No explainability heatmap was generated because no compatible detector/explainer was available.",
+  "limitations": []
+}
+```
+
+Contract rules:
+
+- `status` ∈ `COMPLETED | FAILED`. The stage only FAILS on render/persist
+  errors; missing upstream results are reported as unavailable, never failed.
+- `format` ∈ `pdf` (a `report-document`/plain-text form is reserved) and
+  `version` is `"1"`.
+- `reference` and `artifact.reference` are server-generated safe storage
+  references (plain filenames inside the report storage root) — never absolute
+  filesystem paths, never client-controlled.
+- The `document.sections` (12 in this build), `methodology` keys, and
+  `limitations` order are deterministic; identical inputs ⇒ byte-identical
+  `result_ref` and PDF.
+- Presentation rules (enforced and tested): `null` confidence renders as
+  `NOT QUANTIFIED`, never `0` or a percentage; `UNAVAILABLE` detector/XAI/
+  provenance states carry their real reason; a detector score is shown with
+  its `score_semantics` and is never called confidence/probability; no
+  heatmaps, charts, risk gauges, model identity, filesystem paths, secrets, or
+  legal/admissibility claims are ever included.
 
 ### 2.4 Results
 
@@ -816,3 +920,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 8: XAI stage contract §2.3d (UNAVAILABLE when no real detector model; heatmap only from actual model execution; same-inference guarantee); xai stage after forensics |
 | 2026-08-16 | Phase 9: evidence stage contract §2.3e (normalized EvidenceItem model reusing EvidenceType, availability map with honest UNAVAILABLE/FAILED, correlation dedupe, INSUFFICIENT_EVIDENCE non-numeric confidence); evidence stage after xai |
 | 2026-08-16 | Phase 10: decision stage contracts §2.3f (confidence/risk/verdict result_ref payloads; always INSUFFICIENT_EVIDENCE / UNDETERMINED / INSUFFICIENT_EVIDENCE in this build, no fabricated numeric confidence/risk/verdict; EvidenceReference basis with derived dimension; fail-safe dependency reading); confidence/risk/verdict stages after evidence; report still SKIPPED |
+| 2026-08-16 | Phase 11: report stage contract §2.3g (ReportResult + ReportDocument + PDF artifact; consumes persisted outputs only, never re-runs analysis; COMPLETED/FAILED unrelated to verdict strength; deterministic sections/methodology/limitations; NOT QUANTIFIED/UNAVAILABLE/UNDETERMINED/INSUFFICIENT_EVIDENCE presentation rules; internal-only storage_path; no heatmaps/charts/model identity/paths/secrets/legal claims); report stage after verdict, none SKIPPED |
