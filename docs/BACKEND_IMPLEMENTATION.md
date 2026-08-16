@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-16 (Phase 6)
+> Last updated: 2026-08-16 (Phase 7)
 
 ---
 
@@ -804,6 +804,180 @@ stub prediction, detection error → scan FAILED). `tests/test_worker.py` +
 
 ---
 
+## 2g. Phase 7 — Visual Forensics Engine (implementation status 2026-08-16)
+
+Implements the `forensics` pipeline stage: measurable, deterministic
+image-level forensic observations from three analyzers (ELA, noise residual,
+frequency domain). The engine produces **measurements, never verdicts** — no
+REAL/FAKE/AI-GENERATED probability, no authenticity score, no "manipulated"
+label. Findings are evidence-classified; interpretations are always
+`HEURISTIC` supporting signals. The stage runs independently of `detect`: a
+UNAVAILABLE detector does not block forensics.
+
+### Scientific warning (mandatory context)
+
+Previous experimentation showed generic signals (ELA, noise, frequency) produce
+false positives on normal photos. Therefore no analyzer converts a measurement
+into an authenticity probability. ELA error, noise residuals, and spectral
+shape vary substantially with normal camera processing, JPEG compression,
+resizing, denoising, content, post-processing, and social-media transforms.
+**Measurement ≠ verdict.**
+
+### Architecture
+
+```
+app/forensics/
+    base.py       ForensicError, ForensicAnalyzer Protocol (name, media_type, version, analyze)
+    registry.py   ForensicAnalyzerRegistry (register/get/for_media_type/names, dup rejected)
+    result.py     ForensicFinding (code, evidence_type, message), AnalyzerResult,
+                  build_forensic_payload
+    image.py      bounded grayscale loading: validate_image_size + load_grayscale
+    analyzers/
+        __init__.py   build_default_forensic_analyzer_registry() (ela, noise, frequency)
+        ela.py        ErrorLevelAnalyzer
+        noise.py      NoiseResidualAnalyzer
+        frequency.py  FrequencyAnalyzer
+app/workers/stages/forensics.py   VisualForensicsStage
+```
+
+New analyzers register in `app/forensics/analyzers/__init__.py` without touching
+the pipeline.
+
+### Analyzer contract
+
+- `name` (stable, registered once), `media_type`, `version`.
+- `analyze(path, *, settings) -> AnalyzerResult`; raises `ForensicError`
+  (client-safe message) on failure.
+- Never writes to the database; deterministic for identical bytes + settings.
+- `AnalyzerResult`: `analyzer`, `version`, `status` (`COMPLETED`/`FAILED`),
+  `measurements`, `parameters`, `findings`, `error`.
+
+### Analyzer algorithms and parameters
+
+1. **ELA** (`ela`, version 1). Two-pass recompression probe: bounded grayscale
+   decode → JPEG encode at `quality` → decode → JPEG encode again → decode →
+   `abs(pass1 - pass2)`. Measurements: `mean_abs_error`, `max_error`,
+   `p95_error`, `p99_error`, `error_ratio`. Parameter: `ela_jpeg_quality`
+   (default 80). A uniform image yields exactly zero error; JPEG inputs retain
+   their own compression history. ELA depends on compression history and
+   content — high ELA is NOT proof of manipulation.
+2. **Noise residual** (`noise`, version 1). Grayscale − Gaussian blur
+   (`noise_blur_radius`, default 1.0). Measurements: `residual_mean`,
+   `residual_std`, `residual_energy` (mean of squares), `p99_abs_residual`,
+   `nonzero_ratio`. A uniform image yields exactly zero residual. Noise depends
+   on sensor, ISO, compression, denoising, resizing, content, editing history —
+   high/low residual is NOT proof of AI generation.
+3. **Frequency** (`frequency`, version 1). 2D FFT (mean-subtracted grayscale),
+   shifted spectrum, radial energy bands: low < 0.1·min_dim, mid to 0.3·min_dim,
+   high beyond (module constants `_LOW_FRACTION`/`_MID_FRACTION`), plus
+   normalized spectral entropy (256 power-histogram bins, `_ENTROPY_BINS`).
+   Measurements: `low_energy_ratio`, `mid_energy_ratio`, `high_energy_ratio`,
+   `spectral_entropy`. No frequency signature proves AI generation.
+
+### Stage behavior
+
+- IMAGE-only guard; storage path resolved/existence-checked (mirrors metadata).
+- Image-level failure (unreadable / decompression bomb / over pixel cap) →
+  `StageError` → stage FAILED / scan FAILED.
+- Per-analyzer failure is isolated: that analyzer records `status=FAILED` +
+  `error`; the others still run; the stage COMPLETES (e.g. ELA COMPLETED,
+  noise FAILED, frequency COMPLETED). Unexpected exceptions are logged and
+  recorded as `unexpected analyzer failure`.
+- Empty analyzer registry → `StageError` (misconfiguration, not silent success).
+- Result written to the stage's `ScanStage.result_ref` (existing TEXT column) —
+  **no new table, no migration**.
+
+### Result payload (see API_CONTRACTS §2.3c for full shape)
+
+```json
+{
+  "image": { "format": "PNG", "width": 64, "height": 64, "mode": "L" },
+  "summary": { "analyzers": 3, "completed": 3, "failed": 0 },
+  "analyzers": {
+    "ela": {
+      "analyzer": "ela", "version": "1", "status": "COMPLETED", "error": null,
+      "parameters": { "quality": 80 },
+      "measurements": { "mean_abs_error": 0.0, "max_error": 0, "p95_error": 0.0,
+                        "p99_error": 0.0, "error_ratio": 0.0 },
+      "findings": [
+        { "code": "ela_measured", "evidence_type": "VERIFIED", "message": "..." },
+        { "code": "ela_interpretation", "evidence_type": "HEURISTIC", "message": "..." }
+      ]
+    }
+  }
+}
+```
+
+Float values are rounded to 6 decimal places. Every analyzer emits one VERIFIED
+measurement finding and one HEURISTIC interpretation finding (supporting
+signal only — never an authenticity claim).
+
+### Image safety / resource bounds
+
+- Images are untrusted: decode is capped at `forensics_max_pixels`
+  (default 8 000 000) via `validate_image_size` BEFORE decoding, in addition to
+  Pillow's built-in `MAX_IMAGE_PIXELS` decompression-bomb guard.
+- Only grayscale (`L`) decoding is exposed; the cap guarantees the FFT input
+  (float64) and its complex spectrum stay bounded (~64 MB and ~128 MB
+  respectively at the default cap).
+- No full-size intermediate images are persisted; only compact scalar summaries
+  go into `result_ref`. No temp files (ELA uses in-memory `BytesIO`).
+
+### Determinism
+
+Identical input bytes + identical settings → identical payload (verified by
+tests). Analyzer parameters are explicit (no hidden knobs): ELA quality,
+noise blur radius, frequency band fractions/entropy bins, pixel cap.
+
+### Settings
+
+`forensics_max_pixels` (int, 8 000 000), `ela_jpeg_quality` (int, 80),
+`noise_blur_radius` (float, 1.0) — all in `Settings` and `.env.example`
+(`FORENSICS_MAX_PIXELS`, `ELA_JPEG_QUALITY`, `NOISE_BLUR_RADIUS`).
+
+### Dependencies
+
+Added `numpy>=2.0,<3.0`. Genuinely required for the 2D FFT and array
+statistics — no stdlib FFT exists. OpenCV/scipy/scikit-image were deliberately
+not added. Pillow was already present and is reused for decoding/filtering.
+
+### Testing (Phase 7: +36 tests, total 179)
+
+`tests/test_forensics.py` with deterministic synthetic images (uniform gray,
+gradient, checkerboard, seeded noise, JPEG-compressed variants). Covers:
+analyzer contract; registry register/lookup/duplicate/media-type; default
+registry; per-analyzer determinism; uniform images → zero ELA error and zero
+noise residual; noisy image → higher residual energy; gradient → low-freq
+dominated, checkerboard → high-freq dominated; measurement bounds (ratios sum
+to 1, entropy in [0,1], ELA bounds); invalid/garbage images → `ForensicError`;
+pixel-cap enforcement (analyzer + stage); missing file; video rejection; stage
+registered after detection + pipeline order; result_ref structure; stage
+determinism; isolated analyzer failure (FAILED + others COMPLETED); unexpected
+exception isolation; all-fail completes with structured errors; empty registry
+fails; forensics runs when detection is UNAVAILABLE (worker e2e); worker e2e
+with a failing analyzer still COMPLETES. `tests/test_worker.py`,
+`tests/test_detection.py`, `tests/test_metadata.py` updated for the new stage.
+
+### Completed work (files)
+
+`app/forensics/{base,registry,result,image}.py`,
+`app/forensics/analyzers/{__init__,ela,noise,frequency}.py`,
+`app/workers/stages/forensics.py`, `app/workers/stages/__init__.py`,
+`app/core/config.py`, `.env.example`, `pyproject.toml` (numpy),
+tests `test_forensics.py` + `test_{worker,detection,metadata}.py` updates, docs.
+
+### Limitations (honest)
+
+- Measurements only; no authenticity/verdict interpretation in this phase.
+- ELA/noise/frequency are content- and history-dependent — false-positive
+  signals on natural images are expected and documented.
+- Frequency bands and entropy bins are module constants (documented, not yet
+  settings); only pixel cap, ELA quality, and blur radius are configurable.
+- No video forensics; no XAI/heatmaps (Phase 8); no evidence aggregation
+  (Phase 9).
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -1253,3 +1427,4 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-16 | Phase 4 analysis worker + pipeline: in-process worker with `FOR UPDATE SKIP LOCKED` claiming, stage registry/runner, `validate` + `fingerprint` stages (dHash), lifecycle to COMPLETED/FAILED, opt-in worker in app lifespan, 95 tests green (see §2d). |
 | 2026-08-16 | Phase 5 metadata intelligence: EXIF/XMP extraction, analysis payload, metadata stage, EvidenceType, 123 tests green (see §2e). |
 | 2026-08-16 | Phase 6 detection intelligence: Detector contract + registry + UnavailableDetector + detect stage, 143 tests green, pushed to `origin/backend` (see §2f). |
+| 2026-08-16 | Phase 7 visual forensics engine: ForensicAnalyzer contract + registry, ELA/noise/frequency analyzers, forensics stage after detection, numpy dep, 179 tests green (see §2g). |

@@ -26,6 +26,7 @@ Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` 
 - Placeholder analysis that looks like real evidence is forbidden. If a module does not compute real output, say so.
 - Preserve raw individual evidence alongside any aggregate score.
 - Metadata is evidence, never a verdict. Every metadata finding is classified (`VERIFIED`/`INFERENCE`/`HEURISTIC`/`UNKNOWN`); presence/absence or editor strings never establish AI generation; unparsed provenance (e.g. C2PA) is reported `UNAVAILABLE`, never invented or implied.
+- Forensic measurements are observations, never verdicts. Analyzers (ELA, noise, frequency, etc.) return measurable statistics, never an authenticity probability (`forensic_confidence`, `manipulation_probability`, `AI_probability` are forbidden). A measurement statement is `VERIFIED`; any interpretation is `HEURISTIC` supporting evidence with the limitation stated. Generic signals vary with compression, content, resizing, and denoising — measurement ≠ verdict. Per-analyzer failures are recorded per-analyzer and never fabricated as success.
 
 ## Architecture rules
 

@@ -360,6 +360,68 @@ Contract rules:
   model identity fields are `null` when unknown — never invented.
 - `duration_ms` is measured wall-clock time for the detector call.
 
+### 2.3c Forensics stage result (IMPLEMENTED, Phase 7)
+
+No new endpoint. The `forensics` stage writes a structured, deterministic
+payload to its `result_ref` (JSON), surfaced through
+`GET /api/v1/scans/{scan_id}` (`data.stages[]`).
+
+```json
+{
+  "image": { "format": "PNG", "width": 64, "height": 64, "mode": "L" },
+  "summary": { "analyzers": 3, "completed": 3, "failed": 0 },
+  "analyzers": {
+    "ela": {
+      "analyzer": "ela", "version": "1", "status": "COMPLETED", "error": null,
+      "parameters": { "quality": 80 },
+      "measurements": {
+        "mean_abs_error": 0.0, "max_error": 0,
+        "p95_error": 0.0, "p99_error": 0.0, "error_ratio": 0.0
+      },
+      "findings": [
+        { "code": "ela_measured", "evidence_type": "VERIFIED",
+          "message": "Measured ELA at JPEG quality 80: mean absolute error 0.0, error ratio 0.0000" },
+        { "code": "ela_interpretation", "evidence_type": "HEURISTIC",
+          "message": "ELA is a supporting signal only: ..." }
+      ]
+    },
+    "noise": {
+      "analyzer": "noise", "version": "1", "status": "COMPLETED", "error": null,
+      "parameters": { "blur_radius": 1.0 },
+      "measurements": {
+        "residual_mean": 0.0, "residual_std": 0.0, "residual_energy": 0.0,
+        "p99_abs_residual": 0.0, "nonzero_ratio": 0.0
+      },
+      "findings": [ "...noise_measured...", "...noise_interpretation..." ]
+    },
+    "frequency": {
+      "analyzer": "frequency", "version": "1", "status": "COMPLETED", "error": null,
+      "parameters": { "low_fraction": 0.1, "mid_fraction": 0.3, "entropy_bins": 256 },
+      "measurements": {
+        "low_energy_ratio": 0.0, "mid_energy_ratio": 0.0,
+        "high_energy_ratio": 0.0, "spectral_entropy": 0.0
+      },
+      "findings": [ "...frequency_measured...", "...frequency_interpretation..." ]
+    }
+  }
+}
+```
+
+Contract rules:
+
+- Values are MEASUREMENTS, never an authenticity probability or verdict. No
+  `confidence`, `manipulation_probability`, or `AI_probability` field exists.
+- `status` per analyzer ∈ `COMPLETED | FAILED`. An analyzer failure is isolated:
+  it records `error` (client-safe) while other analyzers still run; the stage
+  itself COMPLETES. Image-level failures (unreadable/oversized) fail the stage.
+- `evidence_type` ∈ `VERIFIED | INFERENCE | HEURISTIC | UNKNOWN` (shared
+  taxonomy). Findings restating a measured value are `VERIFIED`; interpretive
+  statements are `HEURISTIC` and explicitly say the signal is supporting-only.
+- Float measurements are rounded to 6 decimal places; output is deterministic
+  for identical input bytes and settings.
+- Analyzer parameters are explicit and documented (ELA quality, blur radius,
+  frequency band fractions/entropy bins).
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -567,3 +629,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 4: scan execution path documented (worker claims QUEUED, pipeline runs validate+fingerprint, COMPLETED/FAILED semantics, SKIPPED reasons, result_ref JSON for fingerprint); worker opt-in flag; replaceable in-process worker |
 | 2026-08-16 | Phase 5: metadata stage contract §2.3a (extraction/normalization, evidence-classified consistency findings, provenance UNAVAILABLE, result_ref JSON shape); `scan_stages.result_ref` widened to TEXT |
 | 2026-08-16 | Phase 6: detection stage contract §2.3b + AI/ML interface §4.1 implemented (Detector protocol, DetectionResult schema, score_semantics rule, UNAVAILABLE semantics); detector registry; detect stage after metadata |
+| 2026-08-16 | Phase 7: forensics stage contract §2.3c (measurements-only payload, per-analyzer status, VERIFIED/HEURISTIC findings, no authenticity probability); forensics stage after detect |
