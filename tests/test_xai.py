@@ -457,10 +457,12 @@ def test_stage_registered_after_forensics() -> None:
         "detect",
         "forensics",
         "xai",
+        "evidence",
     ]
     implemented = registry.names()
     assert [name for name in STAGE_ORDER if name in registry] == implemented
     assert implemented.index("forensics") < implemented.index("xai")
+    assert implemented.index("xai") < implemented.index("evidence")
 
 
 def test_stage_default_is_unavailable_not_an_error(tmp_path: Path) -> None:

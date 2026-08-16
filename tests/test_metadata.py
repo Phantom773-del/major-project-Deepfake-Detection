@@ -166,6 +166,7 @@ def test_default_registry_has_metadata_registered() -> None:
         "detect",
         "forensics",
         "xai",
+        "evidence",
     ]
     assert registry.get("metadata") is not None
 
