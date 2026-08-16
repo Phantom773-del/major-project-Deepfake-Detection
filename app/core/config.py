@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # this only affects the reported device field today.
     detection_device: str = "cpu"
 
+    # Visual forensics
+    # Images are untrusted input: decoding is capped at forensics_max_pixels
+    # (in addition to Pillow's built-in decompression-bomb guard). The other
+    # values are exposed algorithm parameters used by the analyzers.
+    forensics_max_pixels: int = 8_000_000
+    ela_jpeg_quality: int = 80
+    noise_blur_radius: float = 1.0
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024
