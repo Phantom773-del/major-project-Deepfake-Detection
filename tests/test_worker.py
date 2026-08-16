@@ -96,11 +96,13 @@ def test_default_registry_has_only_implemented_stages() -> None:
         "metadata",
         "detect",
         "forensics",
+        "xai",
     ]
     assert registry.get("metadata") is not None
     assert "metadata" in registry
     assert registry.get("detect") is not None
     assert registry.get("forensics") is not None
+    assert registry.get("xai") is not None
 
 
 def test_registry_rejects_duplicate_registration() -> None:
@@ -143,8 +145,9 @@ async def test_worker_processes_queued_scan_to_completed(
     assert by_name["detect"].result_ref is not None
     assert by_name["forensics"].status is StageStatus.COMPLETED
     assert by_name["forensics"].result_ref is not None
-    for future in ("xai", "evidence",
-                   "confidence", "risk", "verdict", "report"):
+    assert by_name["xai"].status is StageStatus.COMPLETED
+    assert by_name["xai"].result_ref is not None
+    for future in ("evidence", "confidence", "risk", "verdict", "report"):
         assert by_name[future].status is StageStatus.SKIPPED
         assert "not implemented" in (by_name[future].error_message or "")
 
@@ -342,4 +345,6 @@ async def test_api_scan_reaches_completed_via_worker(
     assert stages["metadata"]["status"] == "COMPLETED"
     assert stages["detect"]["status"] == "COMPLETED"
     assert stages["forensics"]["status"] == "COMPLETED"
-    assert stages["xai"]["status"] == "SKIPPED"
+    assert stages["xai"]["status"] == "COMPLETED"
+    assert stages["xai"]["result_ref"] is not None
+    assert stages["evidence"]["status"] == "SKIPPED"
