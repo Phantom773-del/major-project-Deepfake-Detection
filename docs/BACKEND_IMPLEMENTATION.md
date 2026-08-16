@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-16 (Phase 9)
+> Last updated: 2026-08-16 (Phase 10)
 
 ---
 
@@ -1242,6 +1242,149 @@ registered after xai, 7 stages), tests `test_evidence.py` +
 
 ---
 
+## 2j. Phase 10 — Confidence, Risk & Verdict Engine (implementation status 2026-08-16)
+
+Implements the decision layer that consumes the Phase 9 `EvidenceResult`: three
+separate stages (`confidence`, `risk`, `verdict`) that never re-run analysis and
+never invent evidence. The three concepts are kept deliberately distinct:
+
+- **Confidence** — strength and consistency of available evidence supporting an
+  assessment. Never the probability that the media is fake.
+- **Risk** — how concerning/actionable an *established* assessment is for a
+  reviewer. Never equal to confidence and never derived from a raw detector
+  score.
+- **Verdict** — the final defensible conclusion, if any.
+
+### Phase 10 design note (written before implementation)
+
+1. **Available evidence**: fingerprint (SHA-256 VERIFIED, dHash HEURISTIC),
+   metadata (presence/absence VERIFIED, measured findings VERIFIED, timestamp
+   inconsistency HEURISTIC, editing-software VERIFIED), visual forensics
+   (measurements VERIFIED, interpretations HEURISTIC).
+2. **Unavailable evidence**: detection (no detector registered → UNAVAILABLE),
+   XAI (UNAVAILABLE), C2PA provenance (UNAVAILABLE). Recorded honestly in the
+   availability map; never negative evidence.
+3. **Supports authenticity**: only `SUPPORTING_AUTHENTICITY` items — none
+   produced in this build.
+4. **Supports manipulation**: `SUPPORTING_MANIPULATION` items — none in this
+   build.
+5. **Supports synthetic generation**: `SUPPORTING_SYNTHETIC` items — none in
+   this build.
+6. **Editing history only**: `SUPPORTING_EDITING_HISTORY` items (editing
+   software, timestamp inconsistency) map to the MANIPULATED dimension — they
+   never imply SYNTHETIC. None produced in the default scan.
+7. **Model inference**: detection INFERENCE + XAI explanation items — none in
+   this build (no models).
+8. **Heuristic**: dHash, timestamp inconsistency, forensic interpretations,
+   editing-history interpretation.
+9. **Verified observation**: SHA-256, metadata presence/absence, measured
+   metadata fields, forensic measurements.
+10. **Correlated signals (never double-counted)**: `visual-compression`
+    (ELA+frequency), `model-inference` (detection+XAI). The engines reuse the
+    Phase 9 `independent_count` semantics.
+11. **Is numeric confidence defensible? NO.** No calibrated, validated
+    methodology, no calibration data/metrics exist. A numeric confidence would
+    be fabricated. A detector score (e.g. 0.93) has its own `score_semantics`
+    and is never interpreted as a probability.
+12. **Non-numeric representation**: a qualitative ordinal (LIMITED/MODERATE/
+    STRONG) was considered and rejected — (a) no directional evidence exists in
+    this build, and (b) ordinal thresholds would be unvalidated. The honest
+    output is `confidence_status=INSUFFICIENT_EVIDENCE`, `value=null`, with a
+    full evidence `basis` (each item classified as directional or neutral) and
+    explicit limitations.
+13. **Insufficient evidence** = no directional evidence items and/or evidence
+    sources unavailable. The default scan always qualifies.
+14. **Stronger verdict conditions (documented, not implemented)**: verdict
+    levels other than `INSUFFICIENT_EVIDENCE` require
+    `confidence_status=SUFFICIENT_EVIDENCE`, which itself requires a validated,
+    calibrated methodology (documented metrics + reproducibility) plus
+    independent directional evidence in a single dimension from distinct
+    correlation groups. Nothing in this build meets those conditions.
+
+### Architecture
+
+```
+app/assessment/
+    domain.py      AssessmentDimension, RiskLevel, VerdictStatus,
+                   EvidenceReference, ConfidenceResult, RiskResult, VerdictResult
+    _evidence.py   build_references() — directional classification per item
+    confidence.py  ConfidenceEngine.assess(evidence) -> ConfidenceResult
+    risk.py        RiskEngine.assess(evidence, confidence) -> RiskResult
+    verdict.py     VerdictEngine.reach(evidence, confidence) -> VerdictResult
+app/workers/stages/_read.py   read_stage_json() shared dependency reader
+app/workers/stages/confidence.py, risk.py, verdict.py
+```
+
+### Decision rules (code-mirrored)
+
+- **Confidence** always returns `INSUFFICIENT_EVIDENCE` / `value=null`. The
+  `basis` inventories every evidence item with its derived dimension
+  (AUTHENTIC/MANIPULATED/SYNTHETIC/UNKNOWN); `by_dimension` counts directional
+  items. Limitations name every unavailable source ("absence is not negative
+  evidence") and, when a detector inference exists, state that the score is not
+  a calibrated probability. The confidence methodology version is `"1"`.
+- **Risk** returns `UNDETERMINED` whenever confidence is not
+  `SUFFICIENT_EVIDENCE` or no directional evidence exists (always in this
+  build). A raw detector score never determines risk. The
+  LOW/MEDIUM/HIGH/CRITICAL levels are documented vocabulary for a future
+  validated methodology and are not implemented as an arbitrary weight/score
+  formula — such a formula would fabricate risk.
+- **Verdict** returns `INSUFFICIENT_EVIDENCE` whenever confidence is not
+  `SUFFICIENT_EVIDENCE` (always in this build). `INCONCLUSIVE` is reserved for
+  directional-but-conflicting evidence; `LIKELY_AUTHENTIC` /
+  `LIKELY_MANIPULATED` / `LIKELY_SYNTHETIC` require a validated methodology.
+  Manipulation and synthetic generation are distinct verdicts.
+- **Fail-safe**: a missing/failed/unparseable evidence or confidence result is
+  read as `None` and the decision stage still COMPLETES toward
+  INSUFFICIENT_EVIDENCE / UNDETERMINED — it never crashes the scan.
+- **Deterministic**: pure functions of persisted `result_ref` JSON; identical
+  inputs → identical `result_ref`.
+
+### Stage behavior
+
+- IMAGE-only guard (mirrors detect/forensics/xai/evidence).
+- `confidence` reads the `evidence` result; `risk` reads `evidence` +
+  `confidence`; `verdict` reads `evidence` + `confidence`. No storage path
+  resolution.
+- Registered after evidence in `app/workers/stages/__init__.py` (10 stages);
+  `report` remains SKIPPED ("not implemented in this build").
+
+### Testing (Phase 10: +31 tests, total 283)
+
+`tests/test_assessment.py`: confidence engine (default → INSUFFICIENT +
+deterministic; missing/empty evidence fails safe; never numeric; methodology
+version; semantics never probability; unavailable detector is not negative
+evidence; stub directional evidence still INSUFFICIENT; stub detector score is
+not a probability; basis directional classification; default basis all neutral);
+risk engine (default UNDETERMINED; missing confidence fails safe; high stub
+score never elevates; independent of confidence value; methodology version;
+basis only directional; deterministic); verdict engine (default INSUFFICIENT;
+missing confidence fails safe; stub high score is not a conclusion; never
+claims authentic/manipulated/synthetic; manipulation stays distinct from
+synthetic; methodology version; basis includes all evidence); pipeline
+(registry order; worker e2e decision stages COMPLETED with honest results +
+report SKIPPED; API e2e; decision stages reject video; confidence stage reads
+evidence result; confidence stage fails safe without evidence result).
+
+### Completed work (files)
+
+`app/assessment/{__init__,domain,_evidence,confidence,risk,verdict}.py`,
+`app/workers/stages/{_read,confidence,risk,verdict}.py`,
+`app/workers/stages/__init__.py` (10 stages), tests `test_assessment.py` +
+`test_{worker,detection,metadata,xai}.py` updates, docs.
+
+### Limitations (honest)
+
+- Confidence is descriptive only: `INSUFFICIENT_EVIDENCE` / `value=null` always.
+  `SUFFICIENT_EVIDENCE` is reserved and never emitted.
+- Risk is always `UNDETERMINED`; LOW/MEDIUM/HIGH/CRITICAL are unimplemented
+  vocabulary until a validated methodology exists.
+- Verdict is always `INSUFFICIENT_EVIDENCE`; `INCONCLUSIVE` and `LIKELY_*` are
+  unimplemented vocabulary.
+- No calibration data, no validation metrics, no identity/face assessment.
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -1568,20 +1711,28 @@ entry. Unimplemented techniques are documented as future work, never stubbed as 
 
 ## 17. Documented Confidence/Risk Rules (v1)
 
-> Placeholder for the exact, code-mirrored tables. Final numbers frozen at implementation
-> time and kept identical in `app/domain/*` and here. Never change weights silently.
+> Implemented 2026-08-16 (Phase 10) and code-mirrored in `app/assessment/`. The
+> earlier placeholder weighted formula in this section was a spec sketch and is
+> REMOVED: it described fabricated numeric confidence and risk banding that this
+> build must not produce (see §2i, §2j and AGENTS.md honesty rules).
 
-**Confidence** = Σ(signal_strength × weight) over signals, normalized; weights sum to 1.
-Signals: detection (0.40), metadata (0.20), visual forensics (0.25), attribution (0.10),
-XAI coverage (0.05). Heuristic signals capped at a max contribution; verified metadata can
-raise, never raise beyond evidence ceiling. Exact banding documented with code.
+**Confidence** = sufficiency-based, non-numeric. This build ALWAYS emits
+`confidence_status = INSUFFICIENT_EVIDENCE`, `value = null`, with a full
+evidence `basis` (each item classified directional/neutral), per-dimension
+counts, reasons, and limitations naming every unavailable source. A detector
+score is a model output with its own `score_semantics`, never a calibrated
+probability. `SUFFICIENT_EVIDENCE` is reserved for a validated methodology.
 
-**Risk** rule sketch:
-- ≥2 CRITICAL-severity evidence, or 1 critical + ≥2 high → `CRITICAL`
-- ≥2 HIGH or 1 HIGH + ≥3 MEDIUM → `HIGH`
-- ≥2 MEDIUM or 1 HIGH → `MEDIUM`
-- otherwise → `LOW`
-Severity derives from strength + evidence_type (verified/inference/heuristic ceiling).
+**Risk** = UNDETERMINED whenever confidence is not `SUFFICIENT_EVIDENCE` or no
+directional evidence exists (always in this build). LOW/MEDIUM/HIGH/CRITICAL
+are documented vocabulary for a future validated methodology; an arbitrary
+weight/score formula is never used because it would fabricate risk.
+
+**Verdict** = INSUFFICIENT_EVIDENCE whenever confidence is not
+`SUFFICIENT_EVIDENCE` (always in this build). INCONCLUSIVE and LIKELY_AUTHENTIC
+/ LIKELY_MANIPULATED / LIKELY_SYNTHETIC are documented vocabulary for a future
+validated methodology; manipulation and synthetic generation are distinct
+verdicts and editing history never implies synthetic generation.
 
 ## 18. Security Approach
 
@@ -1694,3 +1845,4 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-16 | Phase 7 visual forensics engine: ForensicAnalyzer contract + registry, ELA/noise/frequency analyzers, forensics stage after detection, numpy dep, 179 tests green (see §2g). |
 | 2026-08-16 | Phase 8 XAI engine: XAIExplainer contract + registry, UnavailableExplainer (honest UNAVAILABLE, no fabricated heatmaps), xai stage after forensics reusing the same detector instance as detection, 203 tests green (see §2h). |
 | 2026-08-16 | Phase 9 evidence aggregation & confidence engine: app/evidence package, evidence stage after xai, honest INSUFFICIENT_EVIDENCE confidence (never fabricated numeric), correlation dedupe, 252 tests green, pushed to `origin/backend` (see §2i). |
+| 2026-08-16 | Phase 10 confidence/risk/verdict engine: app/assessment package (ConfidenceEngine, RiskEngine, VerdictEngine), confidence/risk/verdict stages (10 stages registered, report SKIPPED), fail-safe INSUFFICIENT_EVIDENCE/UNDETERMINED, no numeric confidence/risk/verdict fabrication, §17 rewritten to code-mirrored honest rules, 283 tests green, pushed to `origin/backend` (see §2j). |

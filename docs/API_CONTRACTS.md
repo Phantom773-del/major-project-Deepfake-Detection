@@ -534,6 +534,77 @@ Contract rules:
   a future validated methodology.
 - Deterministic: identical pipeline results produce byte-identical payloads.
 
+### 2.3f Decision stage results (IMPLEMENTED, Phase 10)
+
+No new endpoints. The `confidence`, `risk`, and `verdict` stages each write a
+structured, deterministic payload to their `result_ref` (JSON), surfaced
+through `GET /api/v1/scans/{scan_id}` (`data.stages[]`). They consume only the
+persisted `evidence` result (and each other's results) and never re-run
+analysis. Example (this build):
+
+```json
+{
+  "confidence": {
+    "status": "COMPLETED",
+    "confidence_status": "INSUFFICIENT_EVIDENCE",
+    "value": null,
+    "semantics": "Confidence reflects the strength and consistency of available evidence supporting an assessment — never the probability that the media is fake. In this build no validated, calibrated methodology is registered, so confidence is INSUFFICIENT_EVIDENCE and carries no numeric value.",
+    "basis": [
+      { "code": "fingerprint.sha256", "source": "FINGERPRINT", "category": "FILE_INTEGRITY", "evidence_type": "VERIFIED", "direction": "NEUTRAL", "correlation_group": null, "directional": false, "dimension": "UNKNOWN" }
+    ],
+    "by_dimension": { "AUTHENTIC": 0, "MANIPULATED": 0, "SYNTHETIC": 0, "UNKNOWN": 6 },
+    "reasons": ["all evidence items are neutral observations; none supports any assessment direction", "no calibrated confidence methodology is registered in this build; numeric and qualitative confidence levels are not emitted", "evidence methodology version 1; correlation groups considered: [\"visual-compression\"]"],
+    "limitations": ["DETECTION evidence is unavailable; absence is not negative evidence and cannot reduce confidence", "XAI evidence is unavailable; absence is not negative evidence and cannot reduce confidence"],
+    "methodology_version": "1"
+  },
+  "risk": {
+    "status": "COMPLETED",
+    "risk_level": "UNDETERMINED",
+    "value": null,
+    "semantics": "Risk reflects how concerning/actionable an established assessment is for review. It is never an authenticity probability, never equal to confidence, and never derived from a raw detector score. With no directional assessment established, risk cannot be determined.",
+    "basis": [],
+    "reasons": ["confidence is not SUFFICIENT_EVIDENCE; no directional assessment is established, so risk cannot be determined"],
+    "limitations": [],
+    "methodology_version": "1"
+  },
+  "verdict": {
+    "status": "COMPLETED",
+    "verdict": "INSUFFICIENT_EVIDENCE",
+    "semantics": "The verdict is the final defensible conclusion of the pipeline. It is never stronger than the evidence: without a validated methodology and a directional assessment, the honest verdict is INSUFFICIENT_EVIDENCE.",
+    "basis": [
+      { "code": "fingerprint.sha256", "source": "FINGERPRINT", "category": "FILE_INTEGRITY", "evidence_type": "VERIFIED", "direction": "NEUTRAL", "correlation_group": null, "directional": false, "dimension": "UNKNOWN" }
+    ],
+    "reasons": ["confidence is not SUFFICIENT_EVIDENCE; no defensible conclusion can be reached"],
+    "limitations": [],
+    "methodology_version": "1"
+  }
+}
+```
+
+Contract rules:
+
+- `confidence_status` ∈ `INSUFFICIENT_EVIDENCE | SUFFICIENT_EVIDENCE`. This
+  build ALWAYS emits `INSUFFICIENT_EVIDENCE` with `value = null`.
+  `SUFFICIENT_EVIDENCE` is reserved for a validated methodology and is never
+  emitted. A detector score is a model output with its own `score_semantics`,
+  never a calibrated probability.
+- `dimension` ∈ `AUTHENTIC | MANIPULATED | SYNTHETIC | UNKNOWN` is a derived,
+  documented classification of what each evidence item may lean toward — never
+  a verdict. Editing-history evidence maps to `MANIPULATED`, never `SYNTHETIC`.
+- `risk_level` ∈ `UNDETERMINED | LOW | MEDIUM | HIGH | CRITICAL`. This build
+  ALWAYS emits `UNDETERMINED` with `value = null`: an arbitrary weight/score
+  formula would fabricate risk, so it is never used.
+- `verdict` ∈ `INSUFFICIENT_EVIDENCE | INCONCLUSIVE | LIKELY_AUTHENTIC |
+  LIKELY_MANIPULATED | LIKELY_SYNTHETIC`. This build ALWAYS emits
+  `INSUFFICIENT_EVIDENCE`. The `LIKELY_*` levels require a validated
+  methodology; manipulation and synthetic generation are distinct verdicts.
+- Decision stages fail safely: a missing/failed/unparseable `evidence` or
+  `confidence` result still COMPLETES toward `INSUFFICIENT_EVIDENCE` /
+  `UNDETERMINED` — it never fails the scan.
+- `status` is always `COMPLETED` when a decision stage runs; `report` is still
+  SKIPPED in this build.
+- Deterministic: identical pipeline results produce byte-identical payloads.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -744,3 +815,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 7: forensics stage contract §2.3c (measurements-only payload, per-analyzer status, VERIFIED/HEURISTIC findings, no authenticity probability); forensics stage after detect |
 | 2026-08-16 | Phase 8: XAI stage contract §2.3d (UNAVAILABLE when no real detector model; heatmap only from actual model execution; same-inference guarantee); xai stage after forensics |
 | 2026-08-16 | Phase 9: evidence stage contract §2.3e (normalized EvidenceItem model reusing EvidenceType, availability map with honest UNAVAILABLE/FAILED, correlation dedupe, INSUFFICIENT_EVIDENCE non-numeric confidence); evidence stage after xai |
+| 2026-08-16 | Phase 10: decision stage contracts §2.3f (confidence/risk/verdict result_ref payloads; always INSUFFICIENT_EVIDENCE / UNDETERMINED / INSUFFICIENT_EVIDENCE in this build, no fabricated numeric confidence/risk/verdict; EvidenceReference basis with derived dimension; fail-safe dependency reading); confidence/risk/verdict stages after evidence; report still SKIPPED |
