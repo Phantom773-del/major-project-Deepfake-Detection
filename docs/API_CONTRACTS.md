@@ -470,6 +470,70 @@ Contract rules:
 - No fabricated activation maps, no region-influence claims without a real
   model execution, no fake confidence.
 
+### 2.3e Evidence stage result (IMPLEMENTED, Phase 9)
+
+No new endpoint. The `evidence` stage writes a structured, deterministic
+payload to its `result_ref` (JSON), surfaced through `GET /api/v1/scans/{scan_id}`
+(`data.stages[]`). It aggregates the persisted results of the fingerprint,
+metadata, detection, forensics, and XAI stages into one normalized evidence
+view. Example (this build: no detector model, no C2PA parser):
+
+```json
+{
+  "status": "COMPLETED",
+  "methodology": { "version": "1", "aggregation": "evidence-count", "correlation": "dedupe-by-group", "confidence": "sufficiency-based; non-numeric" },
+  "availability": {
+    "FINGERPRINT": "AVAILABLE",
+    "METADATA": "AVAILABLE",
+    "DETECTION": "UNAVAILABLE",
+    "VISUAL_FORENSICS": "AVAILABLE",
+    "XAI": "UNAVAILABLE"
+  },
+  "evidence": [
+    { "code": "fingerprint.sha256", "source": "FINGERPRINT", "category": "FILE_INTEGRITY", "evidence_type": "VERIFIED", "observation": "Byte-level SHA-256 fingerprint was computed for the stored file", "interpretation": "SHA-256 uniquely identifies the file bytes; it verifies file integrity, never authenticity", "direction": "NEUTRAL", "correlation_group": null, "details": { "sha256": "...", "size_bytes": 123 } }
+  ],
+  "summary": {
+    "total": 6,
+    "independent_count": 5,
+    "by_evidence_type": { "HEURISTIC": 1, "VERIFIED": 5 },
+    "by_direction": { "NEUTRAL": 6 },
+    "by_category": { "FILE_INTEGRITY": 1, "METADATA_CONSISTENCY": 0, "PROVENANCE": 2, "VISUAL_ANOMALY": 3 }
+  },
+  "correlation": {
+    "groups": ["visual-compression"],
+    "note": "ELA and frequency analyzers are both influenced by JPEG compression and form the visual-compression group; XAI explains the same detector inference and forms the model-inference group. Within a group only the first item counts toward independent_count, so correlated signals are never treated as fully independent."
+  },
+  "confidence": {
+    "status": "INSUFFICIENT_EVIDENCE",
+    "value": null,
+    "semantics": "Confidence reflects the strength and consistency of available evidence supporting an assessment, not the probability that the media is fake.",
+    "reasons": ["no calibrated probability model exists in this build; a numeric confidence would be fabricated, not computed", "sufficiency is reported, never a probability", "DETECTION evidence is unavailable", "XAI evidence is unavailable"]
+  },
+  "limitations": ["DETECTION evidence is unavailable: detection produced no model prediction in this build", "XAI evidence is unavailable: xai produced no model explanation in this build", "METADATA: C2PA provenance is unavailable: not implemented in this build"]
+}
+```
+
+Contract rules:
+
+- `status` is always `COMPLETED` when the stage runs: UNAVAILABLE/FAILED
+  sources are recorded in `availability` and `limitations` and never fail the
+  aggregation.
+- `source` ∈ `FINGERPRINT | METADATA | DETECTION | VISUAL_FORENSICS | XAI`;
+  `category` ∈ `FILE_INTEGRITY | PROVENANCE | METADATA_CONSISTENCY |
+  VISUAL_ANOMALY | MODEL_BEHAVIOR | SYNTHETIC_GENERATION | AUTHENTICITY` (no
+  MANIPULATION category exists in this build);
+  `direction` ∈ `UNKNOWN | NEUTRAL | SUPPORTING_AUTHENTICITY |
+  SUPPORTING_MANIPULATION | SUPPORTING_SYNTHETIC | SUPPORTING_EDITING_HISTORY`.
+- `evidence_type` reuses the shared EvidenceType taxonomy (VERIFIED /
+  INFERENCE / HEURISTIC / UNKNOWN) — never a competing scheme.
+- UNAVAILABLE/FAILED sources are honest states, never negative evidence.
+  Absence of metadata is never evidence of AI generation.
+- `confidence.status` is always `INSUFFICIENT_EVIDENCE` and `confidence.value`
+  is always `null` in this build: no validated probability model exists, so a
+  numeric confidence would be fabricated. `SUFFICIENT_EVIDENCE` is reserved for
+  a future validated methodology.
+- Deterministic: identical pipeline results produce byte-identical payloads.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -679,3 +743,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-16 | Phase 6: detection stage contract §2.3b + AI/ML interface §4.1 implemented (Detector protocol, DetectionResult schema, score_semantics rule, UNAVAILABLE semantics); detector registry; detect stage after metadata |
 | 2026-08-16 | Phase 7: forensics stage contract §2.3c (measurements-only payload, per-analyzer status, VERIFIED/HEURISTIC findings, no authenticity probability); forensics stage after detect |
 | 2026-08-16 | Phase 8: XAI stage contract §2.3d (UNAVAILABLE when no real detector model; heatmap only from actual model execution; same-inference guarantee); xai stage after forensics |
+| 2026-08-16 | Phase 9: evidence stage contract §2.3e (normalized EvidenceItem model reusing EvidenceType, availability map with honest UNAVAILABLE/FAILED, correlation dedupe, INSUFFICIENT_EVIDENCE non-numeric confidence); evidence stage after xai |

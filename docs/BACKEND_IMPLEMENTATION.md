@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-16 (Phase 8)
+> Last updated: 2026-08-16 (Phase 9)
 
 ---
 
@@ -1104,6 +1104,144 @@ tests `test_xai.py` + `test_{worker,detection,metadata}.py` updates, docs.
 
 ---
 
+## 2i. Phase 9 — Evidence Aggregation & Confidence Engine (implementation status 2026-08-16)
+
+Implements the `evidence` pipeline stage: a normalized evidence layer that
+consumes the persisted outputs of the fingerprint, metadata, detection, visual
+forensics, and XAI stages and produces ONE deterministic evidence result. The
+engine reuses the shared `EvidenceType` taxonomy (VERIFIED / INFERENCE /
+HEURISTIC / UNKNOWN) — it never defines a competing classification — and it
+never invents evidence, never treats UNAVAILABLE as a negative signal, and never
+emits a numeric confidence it cannot defend.
+
+### Phase 9 design note (written before implementation)
+
+1. **Available evidence in this build**: fingerprint (SHA-256 + dHash + size),
+   metadata (EXIF/XMP/ICC/GPS presence + consistency findings + software list),
+   and visual forensics (ELA, noise residual, frequency measurements + findings).
+2. **Unavailable evidence in this build**: detection (no image detector
+   registered → UNAVAILABLE), XAI (no model inference to explain → UNAVAILABLE),
+   and C2PA provenance (no parser → UNAVAILABLE). All three are recorded
+   explicitly in the `availability` map with a reason — they are NOT evidence
+   and they are NOT treated as negative evidence.
+3. **Evidence types produced**: VERIFIED (fingerprint, metadata presence and
+   measured findings, forensic measurements), HEURISTIC (dHash, timestamp
+   inconsistency, forensic interpretations), INFERENCE (only when a real
+   detector prediction or real XAI explanation exists — none in this build),
+   UNKNOWN (reserved).
+4. **Independence**: fingerprint, metadata, and visual forensics are treated as
+   independent evidence streams for counting.
+5. **Correlation (never double-count)**: ELA and frequency are both influenced
+   by JPEG compression → `visual-compression` group. XAI explains the same
+   detector inference → `model-inference` group with detection. Within a group
+   only the FIRST item counts toward `independent_count`.
+6. **What confidence can legitimately mean**: "the strength and consistency of
+   available evidence supporting an assessment" — never "the probability that
+   the media is fake".
+7. **Is numeric confidence defensible? NO.** No validated probability model,
+   no detector, no calibration data exist in this build. A numeric value would
+   be fabricated, not computed. Therefore the aggregator ALWAYS emits
+   `confidence.status = INSUFFICIENT_EVIDENCE`, `confidence.value = null`, with
+   explicit reasons. `SUFFICIENT_EVIDENCE` exists as a status but is reserved
+   for a future validated methodology and is never emitted by this build.
+
+### Architecture
+
+```
+app/evidence/
+    domain.py      EvidenceSource, EvidenceCategory, EvidenceDirection,
+                   EvidenceAvailability, ConfidenceStatus, EvidenceItem,
+                   EvidenceSummary, CorrelationNote, ConfidenceAssessment,
+                   EvidenceMethodology, EvidenceResult
+    normalizer.py  per-source normalize_source() -> NormalizedSource
+    aggregator.py  aggregate_evidence(sources) -> EvidenceResult (deterministic)
+app/workers/stages/evidence.py   EvidenceAggregationStage
+```
+
+### Normalization rules (honesty-critical)
+
+- **Fingerprint** → `FILE_INTEGRITY`: SHA-256 = VERIFIED/NEUTRAL ("identifies
+  file bytes; never authenticity"); dHash = HEURISTIC/NEUTRAL (near-duplicate
+  support only).
+- **Metadata** → `PROVENANCE` + `METADATA_CONSISTENCY`: presence AND absence
+  are VERIFIED/NEUTRAL observations; absence wording explicitly states "not
+  evidence of AI generation or manipulation". GPS presence is NEUTRAL (privacy
+  observation, never authenticity). Software presence is NEUTRAL. Consistency
+  findings keep the analyzer's `evidence_type`; editing-software and timestamp
+  inconsistencies map to `SUPPORTING_EDITING_HISTORY` (heuristic — never
+  manipulation); format/mime mismatch stays NEUTRAL. C2PA unavailable →
+  limitation only, source still AVAILABLE.
+- **Detection** → one INFERENCE item only when the detector itself marked the
+  result `evidence_type = INFERENCE` AND a real prediction exists. Label FAKE →
+  `SYNTHETIC_GENERATION`/`SUPPORTING_SYNTHETIC`, REAL →
+  `AUTHENTICITY`/`SUPPORTING_AUTHENTICITY`; unknown labels stay NEUTRAL
+  `MODEL_BEHAVIOR`. Details carry the full model identity (name, version,
+  checkpoint, preprocessing) + score + `score_semantics` + device. Otherwise
+  UNAVAILABLE — never a negative signal.
+- **Forensics** → one VERIFIED/NEUTRAL item per COMPLETED analyzer
+  (`VISUAL_ANOMALY`), reusing the analyzer's HEURISTIC interpretation finding as
+  the item interpretation. Per-analyzer failures are recorded; a partial run is
+  AVAILABLE, an all-failed run is FAILED — never fabricated as success.
+- **XAI** → COMPLETED explanations become `MODEL_BEHAVIOR`/INFERENCE/NEUTRAL
+  with technique + model identity + heatmap availability ("model behavior, not
+  ground-truth manipulation evidence"). UNAVAILABLE → no items.
+
+### Aggregation rules
+
+- Consumes only persisted `result_ref` JSON from `Scan.stages` (never the
+  stored file, never client input); a missing/unparseable/failed source is
+  recorded as UNAVAILABLE/FAILED and the engine still COMPLETES.
+- Deterministic: sources in pipeline order, items sorted by (source, code),
+  counts sorted by key; identical inputs → identical result_ref.
+- Correlation groups dedupe as in the design note; `independent_count` counts
+  only non-duplicated items.
+- `confidence` ALWAYS `INSUFFICIENT_EVIDENCE` / `value = null` with reasons
+  (base reasons + unavailable sources). No numeric confidence, ever.
+
+### Stage behavior
+
+- IMAGE-only guard (mirrors detect/forensics/xai).
+- Reads fingerprint/metadata/detect/forensics/xai `result_ref` from
+  `ctx.scan.stages`; no storage path resolution (aggregation is pure
+  consumption of persisted structured results).
+- Never raises because one source was unavailable or failed.
+
+### Testing (Phase 9: +49 tests, total 252)
+
+`tests/test_evidence.py`: enum/domain validation (shared EvidenceType, no
+MANIPULATION category); aggregation availability + confidence honesty (empty →
+all UNAVAILABLE + INSUFFICIENT; still INSUFFICIENT even with all evidence
+available; reasons list unavailable sources; availability map completeness;
+UNAVAILABLE detection is not negative evidence; determinism; summary counts);
+fingerprint/metadata/detection/forensics/xai normalization (including
+metadata-absence-is-not-AI, GPS neutral, timestamp heuristic not manipulation,
+detection model-identity propagation, per-analyzer failure, all-failed source);
+correlation dedupe (visual-compression, model-inference); stage behavior
+(COMPLETED with honest availability, no image file needed, missing/failed/
+unparseable source isolation, real-prediction still no fabricated confidence,
+determinism, video rejected, registered after xai); worker e2e (default pipeline
+→ honest UNAVAILABLE detection/xai; stub detector → detection INFERENCE evidence
+present yet confidence still INSUFFICIENT).
+
+### Completed work (files)
+
+`app/evidence/{__init__,domain,normalizer,aggregator}.py`,
+`app/workers/stages/evidence.py`, `app/workers/stages/__init__.py` (evidence
+registered after xai, 7 stages), tests `test_evidence.py` +
+`test_{worker,detection,metadata,xai}.py` updates, docs.
+
+### Limitations (honest)
+
+- No numeric confidence and no SUFFICIENT_EVIDENCE in this build (see design
+  note §7). `confidence` is descriptive only.
+- Only categories backed by an implemented source exist; there is NO
+  MANIPULATION category and no manipulation assessment anywhere.
+- Detection/XAI evidence paths are implemented and tested via stub detectors but
+  unexercised with a real model in this build.
+- No evidence persistence beyond the stage `result_ref` (no new table).
+
+---
+
 ## 3. Technology Stack
 
 | Layer | Choice | Rationale |
@@ -1555,3 +1693,4 @@ Dev (installed): `pytest`, `pytest-asyncio`, `httpx`, `ruff`, `mypy`, `pre-commi
 | 2026-08-16 | Phase 6 detection intelligence: Detector contract + registry + UnavailableDetector + detect stage, 143 tests green, pushed to `origin/backend` (see §2f). |
 | 2026-08-16 | Phase 7 visual forensics engine: ForensicAnalyzer contract + registry, ELA/noise/frequency analyzers, forensics stage after detection, numpy dep, 179 tests green (see §2g). |
 | 2026-08-16 | Phase 8 XAI engine: XAIExplainer contract + registry, UnavailableExplainer (honest UNAVAILABLE, no fabricated heatmaps), xai stage after forensics reusing the same detector instance as detection, 203 tests green (see §2h). |
+| 2026-08-16 | Phase 9 evidence aggregation & confidence engine: app/evidence package, evidence stage after xai, honest INSUFFICIENT_EVIDENCE confidence (never fabricated numeric), correlation dedupe, 252 tests green, pushed to `origin/backend` (see §2i). |
