@@ -238,6 +238,76 @@ worker claims it (`FOR UPDATE SKIP LOCKED`), runs the pipeline, and finalizes it
   by Celery. Stage rows expose `status`, `error_message`, `result_ref`,
   `duration_ms`.
 
+### 2.3a Metadata stage result (IMPLEMENTED, Phase 5)
+
+No new endpoint. The metadata stage writes its normalized payload to the
+`metadata` stage's `result_ref` (JSON), surfaced through
+`GET /api/v1/scans/{scan_id}` (`data.stages[]`). Shape is stable and
+deterministic; absent values are `null`/empty — never placeholders.
+
+```json
+{
+  "format": "JPEG",
+  "mode": "RGB",
+  "dimensions": { "width": 24, "height": 16 },
+  "exif": {
+    "present": true,
+    "camera_make": "Nikon",
+    "camera_model": "Z9",
+    "captured_at": "2023-05-04T10:11:12",
+    "modified_at": null,
+    "software": ["Adobe Photoshop 24.0"],
+    "orientation": 6,
+    "exposure_time": null, "f_number": null,
+    "iso_speed_ratings": 400, "focal_length": null, "flash": null,
+    "white_balance": null, "image_description": null, "artist": null,
+    "copyright": null, "lens_make": null, "lens_model": null
+  },
+  "gps": {
+    "present": true,
+    "latitude": 37.8666667, "longitude": -122.4166667,
+    "altitude_m": 12.5, "date_stamp": "2023:05:04"
+  },
+  "xmp": {
+    "present": false,
+    "creator_tool": null, "create_date": null, "modify_date": null,
+    "metadata_date": null, "creators": [], "rights": null, "title": null,
+    "description": null, "format": null, "software": []
+  },
+  "icc": { "present": false },
+  "presence": { "exif": true, "xmp": false, "icc": false, "gps": true },
+  "software": ["Adobe Photoshop 24.0"],
+  "consistency": {
+    "findings": [
+      {
+        "code": "gps_present",
+        "evidence_type": "VERIFIED",
+        "message": "GPS coordinates are present in the metadata (privacy-sensitive)"
+      }
+    ],
+    "count": 1
+  },
+  "provenance": {
+    "status": "UNAVAILABLE",
+    "note": "C2PA/manifest provenance parsing is not implemented in this build"
+  },
+  "extractor": { "library": "Pillow", "errors": [] }
+}
+```
+
+Contract rules:
+
+- `evidence_type` ∈ `VERIFIED | INFERENCE | HEURISTIC | UNKNOWN` (same taxonomy
+  as the evidence model). Findings carry real, parsed values only.
+- Timestamps are naive ISO 8601 (EXIF carries no timezone; never assumed UTC).
+- GPS values are signed decimal degrees; presence alone is flagged
+  (`gps_present`) as privacy-sensitive.
+- `provenance.status` is `UNAVAILABLE` until a real C2PA parser exists — a
+  missing manifest is never reported as "unsigned/proven, real" or "fake".
+- Editing software is evidence of processing, never a claim of AI generation
+  (the message says so explicitly).
+- Metadata presence/absence or any single finding is NOT a verdict.
+
 ### 2.4 Results
 
 | Method | Path | Description |
@@ -418,3 +488,4 @@ the producing `model_version_id`; accuracy claims require measured evaluation da
 | 2026-08-15 | Phase 2: implement POST/GET /api/v1/media (minimal creation, no upload); POST /api/v1/scans, GET /api/v1/scans/{id}, GET /api/v1/scans (paginated, status filter); scan lifecycle statuses + state machine; 11 canonical pipeline stages |
 | 2026-08-16 | Phase 3: replace POST /api/v1/media with POST /api/v1/media/upload (multipart, secure ingestion); error codes EMPTY_FILE/FILE_TOO_LARGE/UNSUPPORTED_TYPE/INVALID_CONTENT/INVALID_FILENAME; max size default 50 MB; allowlist JPEG/PNG/WebP; MIME-spoofing policy; upload contract §2.2c |
 | 2026-08-16 | Phase 4: scan execution path documented (worker claims QUEUED, pipeline runs validate+fingerprint, COMPLETED/FAILED semantics, SKIPPED reasons, result_ref JSON for fingerprint); worker opt-in flag; replaceable in-process worker |
+| 2026-08-16 | Phase 5: metadata stage contract §2.3a (extraction/normalization, evidence-classified consistency findings, provenance UNAVAILABLE, result_ref JSON shape); `scan_stages.result_ref` widened to TEXT |

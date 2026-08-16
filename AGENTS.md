@@ -25,6 +25,7 @@ Python 3.14 managed with `uv`. Quality gates: `pytest`, `ruff`, `mypy --strict` 
 - Never claim exact generator/checkpoint/seed/prompt recovery without a real evidence source.
 - Placeholder analysis that looks like real evidence is forbidden. If a module does not compute real output, say so.
 - Preserve raw individual evidence alongside any aggregate score.
+- Metadata is evidence, never a verdict. Every metadata finding is classified (`VERIFIED`/`INFERENCE`/`HEURISTIC`/`UNKNOWN`); presence/absence or editor strings never establish AI generation; unparsed provenance (e.g. C2PA) is reported `UNAVAILABLE`, never invented or implied.
 
 ## Architecture rules
 

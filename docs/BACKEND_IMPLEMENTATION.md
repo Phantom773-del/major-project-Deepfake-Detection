@@ -1,7 +1,7 @@
 # PHANTOM PHOENIX — Backend Implementation Record & Architecture Blueprint
 
 > Phase 0 document. Engineering record — updated continuously as implementation progresses.
-> Last updated: 2026-08-15 (Phase 0 baseline)
+> Last updated: 2026-08-16 (Phase 5)
 
 ---
 
@@ -569,6 +569,123 @@ ScanExecutionService      ──> COMPLETED (or FAILED with client-safe message)
 `app/services/scans.py` (`mark_stage(..., result_ref)`), `app/main.py`
 (opt-in worker task), `app/core/config.py` (worker settings), `.env.example`,
 tests `test_{worker,perceptual,config}.py`, docs.
+
+---
+
+## 2e. Phase 5 — Metadata Intelligence Stage (implementation status 2026-08-16)
+
+Implements the `metadata` pipeline stage: real, normalized metadata extraction
+(EXIF / XMP / GPS / ICC, dimensions, format) from the stored file, plus a small
+set of defensible consistency checks. The stage writes a structured, deterministic
+JSON payload to `ScanStage.result_ref`. Metadata is **evidence, not a verdict** —
+the stage never decides REAL/FAKE/AI-GENERATED/MANIPULATED.
+
+### Scope (explicit)
+
+- **In scope:** metadata extraction, normalization, presence/absence reporting,
+  evidence-classified consistency findings, provenance unavailability, result
+  contract.
+- **Out of scope this milestone (never fabricated):** C2PA/manifest provenance
+  parsing (reported as `provenance.status: "UNAVAILABLE"` with an explicit note),
+  AI detection, attribution, visual forensics, XAI, risk, verdict, reports.
+- No new API endpoint and no new database table — the result flows through the
+  existing scan/stage endpoints via `result_ref`.
+
+### Extraction (`app/metadata/extractor.py`)
+
+- Wraps **Pillow only** (`PIL.Image`, `ExifTags`, `getxmp`). `defusedxml` was
+  added so `getxmp()` can parse XMP safely (Pillow refuses otherwise): pure-Python,
+  secure XML with no entity expansion. No other metadata libraries.
+- `extract_image_metadata(path) -> ExtractedMetadata`:
+  `format`, `mode`, `width`, `height`, `icc_profile_present`, normalized
+  `ExifMetadata`, `XmpMetadata`, `GpsMetadata`, and `extractor_errors`.
+- EXIF: stable canonical tag ids (make, model, orientation, software, date-time,
+  date-time-original, exposure time, f-number, ISO, flash, focal length, copyright,
+  image description, artist, lens make/model, white balance). GPS via the GPSInfo
+  IFD (`deg/min/sec` rationals → signed decimal degrees; altitude in metres;
+  date stamp).
+- XMP: Pillow's `getxmp()` result drilled into the RDF `Description` —
+  `CreatorTool`, `CreateDate`, `ModifyDate`, `MetadataDate`, `creator`, `rights`,
+  `title`, `description`, `format`, `Software`. A malformed/hostile XMP packet is
+  caught and recorded as an `extractor_error` — it never crashes the stage
+  (verified by test with a deliberately broken packet).
+- Timestamps are normalized `YYYY:MM:DD HH:MM:SS` → naive ISO 8601
+  (`2023-05-04T10:11:12`). EXIF carries no timezone, so the output has no offset
+  and never assumes UTC. Malformed timestamps → `null` + `extractor_error`.
+- Bounds: text truncated at 1000 chars, lists capped at 10 entries.
+  `DecompressionBombError` (Pillow's pixel-bomb guard) is caught and surfaced as
+  a client-safe error.
+- Extraction is strictly read-only (no modification, no thumbnail writes).
+
+### Consistency analysis (`app/metadata/analyzer.py`)
+
+`analyze_metadata(extracted, recorded_mime=...) -> tuple[Finding, ...]`, findings
+sorted by code. Every finding is evidence-classified via the `EvidenceType` enum
+(`app/domain/taxonomy.py`: `VERIFIED`, `INFERENCE`, `HEURISTIC`, `UNKNOWN`):
+
+| Code | Evidence | Meaning |
+| --- | --- | --- |
+| `exif_orientation_out_of_range` | VERIFIED | EXIF orientation outside the valid 1–8 range |
+| `capture_later_than_modification` | HEURISTIC | capture timestamp later than the modification timestamp; contradictory, but not manipulation on its own |
+| `gps_present` | VERIFIED | GPS coordinates present (privacy-sensitive) |
+| `editing_software_metadata` | VERIFIED | known editor string in EXIF/XMP software; the message explicitly states this does not establish AI generation |
+| `format_mime_mismatch` | VERIFIED | detected image format disagrees with the recorded mime type |
+
+Consistency checks only ever combine values actually parsed from the file — no
+invented cross-checks, no thresholds that claim forensic truth.
+
+### Result contract (`app/metadata/result.py`, `result_ref` JSON)
+
+Stable shape (documented in `docs/API_CONTRACTS.md` §2e):
+`format`, `mode`, `dimensions {width, height}`, `exif` (each field `null` when
+absent), `gps`, `xmp`, `icc`, `presence {exif, xmp, icc, gps}`,
+`software` (EXIF+XMP merged, deduplicated, capped), `consistency {findings, count}`,
+`provenance {status: "UNAVAILABLE", note}`, `extractor {library, errors}`.
+Serialized with `sort_keys=True` — output is deterministic for identical input
+(covered by test). Absent metadata yields `null`/empty values, never placeholders.
+
+### Stage + pipeline integration
+
+- `app/workers/stages/metadata.py` (`MetadataStage`, `name = "metadata"`):
+  guards `MediaType.IMAGE` (`StageError` otherwise); resolves the storage ref
+  (traversal rejected); missing file → `StageError("stored media file is missing")`;
+  runs extraction off the event loop (`asyncio.to_thread`); `MetadataExtractionError`
+  → client-safe `StageError` (no paths/tracebacks); analyzes + builds payload →
+  `StageResult(result_ref=json.dumps(payload, sort_keys=True))`.
+- Registered in `build_default_registry()` after `fingerprint`. Order within
+  `STAGE_ORDER` is preserved: `validate → fingerprint → metadata` (test-asserted).
+- `ScanStage.result_ref` widened `VARCHAR(255) → TEXT` (migration
+  `ba9f064f0acf`); the `metadata` payload would not fit in 255 chars.
+
+### Security / privacy
+
+- Metadata is read-only; `defusedxml` bounds XML parsing; `DecompressionBombError`
+  caught; text/list bounds cap hostile payloads.
+- GPS presence is explicitly flagged (`gps_present` finding) as privacy-sensitive.
+- Storage refs stay internal; client-supplied Content-Type is never trusted for
+  parsing (server-side content detection is authoritative).
+
+### Testing (Phase 5: +28 tests, total 123)
+
+`tests/test_metadata.py` (fixtures crafted from raw bytes, incl. `tests/_exif_builder.py`
+which builds TIFF-format EXIF/GPSIFD bytes Pillow cannot write): registry +
+ordering; JPEG EXIF values; JPEG without EXIF; PNG extraction; GPS values
+(signed decimal degrees, altitude, date stamp); timestamp normalization to naive
+ISO; XMP extraction; software merge/dedupe; ICC presence flag; editing-software
+VERIFIED finding; capture-vs-modification HEURISTIC finding; orientation range;
+GPS presence; clean file → zero findings; format/mime mismatch; missing file;
+corrupt image; client-safe error text; non-image media rejected; malformed
+metadata non-fatal (recorded in `extractor.errors`); malformed XMP non-fatal;
+result structure + provenance `UNAVAILABLE`; no fabricated fields; evidence-type
+set; determinism; worker e2e (metadata COMPLETED with real payload); corrupt-file
+worker failure.
+
+### Completed work (files)
+
+`app/metadata/{extractor,analyzer,result}.py`, `app/workers/stages/metadata.py`,
+`app/domain/taxonomy.py` (`EvidenceType`), `app/db/models/scan.py` (`result_ref`
+→ `TEXT`), migration `ba9f064f0acf`, `pyproject.toml` (`defusedxml`),
+tests `test_{metadata,_exif_builder}.py`, docs.
 
 ---
 
