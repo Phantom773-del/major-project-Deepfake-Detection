@@ -12,6 +12,7 @@ from app.workers.stages.fingerprint import FingerprintStage
 from app.workers.stages.forensics import VisualForensicsStage
 from app.workers.stages.metadata import MetadataStage
 from app.workers.stages.validate import ValidateStage
+from app.workers.stages.xai import XAIStage
 
 
 def build_default_registry() -> StageRegistry:
@@ -22,4 +23,5 @@ def build_default_registry() -> StageRegistry:
     registry.register(MetadataStage())
     registry.register(DetectionStage())
     registry.register(VisualForensicsStage())
+    registry.register(XAIStage())
     return registry
