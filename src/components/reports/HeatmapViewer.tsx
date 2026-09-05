@@ -17,9 +17,14 @@ interface HeatmapViewerProps {
 export const HeatmapViewer: React.FC<HeatmapViewerProps> = ({ imageUrl, highRiskRegions = [] }) => {
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [activeLayer, setActiveLayer] = useState<'gradcam' | 'lime' | 'frequency'>('gradcam');
-  const { previewUrl } = useAnalysisContext();
+  const { previewUrl, selectedFile } = useAnalysisContext();
 
-  const displayImg = imageUrl || previewUrl || sessionStorage.getItem('current_upload_img');
+  // previewUrl from context is always alive (never revoked).
+  // Fall back to imageUrl (from report JSON) then sessionStorage for small images.
+  const displaySrc = previewUrl || imageUrl || sessionStorage.getItem('current_upload_img') || null;
+
+  // Determine if the uploaded file is a video so we render <video> not <img>
+  const isVideo = selectedFile?.type.startsWith('video/') ?? false;
 
   return (
     <GlassCard className="space-y-6">
@@ -28,60 +33,88 @@ export const HeatmapViewer: React.FC<HeatmapViewerProps> = ({ imageUrl, highRisk
           <Eye className="w-5 h-5 text-cyan-400" />
           <div>
             <h3 className="text-lg font-bold text-white">Explainable AI (XAI) Visual Evidence</h3>
-            <p className="text-xs text-slate-400">GradCAM Heatmap & Manipulation Region Overlays</p>
+            <p className="text-xs text-slate-400">GradCAM Heatmap &amp; Manipulation Region Overlays</p>
           </div>
         </div>
 
-        {/* Controls */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowHeatmap(!showHeatmap)}
-            className={`text-xs px-3 py-1.5 rounded-lg border font-mono flex items-center gap-1.5 transition-colors ${
-              showHeatmap
-                ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
-                : 'bg-slate-800 text-slate-400 border-slate-700'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Heatmap Overlay: {showHeatmap ? 'ON' : 'OFF'}</span>
-          </button>
+        {/* Heatmap toggle — hide for videos since overlay makes no sense */}
+        {!isVideo && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHeatmap(!showHeatmap)}
+              className={`text-xs px-3 py-1.5 rounded-lg border font-mono flex items-center gap-1.5 transition-colors ${
+                showHeatmap
+                  ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Heatmap Overlay: {showHeatmap ? 'ON' : 'OFF'}</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Layer Tabs — only for images */}
+      {!isVideo && (
+        <div className="flex gap-2">
+          {(['gradcam', 'lime', 'frequency'] as const).map((layer) => (
+            <button
+              key={layer}
+              onClick={() => setActiveLayer(layer)}
+              className={`text-xs px-3 py-1.5 rounded-lg font-mono capitalize transition-all ${
+                activeLayer === layer
+                  ? 'bg-blue-600 text-white font-bold'
+                  : 'bg-slate-800/60 text-slate-400 hover:text-white'
+              }`}
+            >
+              {layer === 'gradcam' ? 'GradCAM (Activation)' : layer === 'lime' ? 'LIME Superpixels' : 'FFT Artifacts'}
+            </button>
+          ))}
         </div>
-      </div>
+      )}
 
-      {/* Layer Tabs */}
-      <div className="flex gap-2">
-        {(['gradcam', 'lime', 'frequency'] as const).map((layer) => (
-          <button
-            key={layer}
-            onClick={() => setActiveLayer(layer)}
-            className={`text-xs px-3 py-1.5 rounded-lg font-mono capitalize transition-all ${
-              activeLayer === layer
-                ? 'bg-blue-600 text-white font-bold'
-                : 'bg-slate-800/60 text-slate-400 hover:text-white'
-            }`}
-          >
-            {layer === 'gradcam' ? 'GradCAM (Activation)' : layer === 'lime' ? 'LIME Superpixels' : 'FFT Artifacts'}
-          </button>
-        ))}
-      </div>
-
-      {/* Media Canvas View */}
-      <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 aspect-video flex items-center justify-center group">
+      {/* Media Canvas */}
+      <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-800 aspect-video flex items-center justify-center">
         <div className="w-full h-full bg-slate-950 flex items-center justify-center relative overflow-hidden">
-          {displayImg ? (
-            <img
-              src={displayImg}
-              alt="Uploaded Source Media"
-              className="max-h-full max-w-full object-contain"
-            />
+
+          {displaySrc ? (
+            isVideo ? (
+              /* ── Video player ── */
+              <video
+                src={displaySrc}
+                className="max-h-full max-w-full object-contain"
+                controls
+                muted
+                playsInline
+              />
+            ) : (
+              /* ── Image viewer ── */
+              <img
+                src={displaySrc}
+                alt="Uploaded Source Media"
+                className="max-h-full max-w-full object-contain"
+                onError={(e) => {
+                  // Hide broken icon if URL is dead
+                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                }}
+              />
+            )
           ) : (
-            <div className="w-32 h-32 rounded-full border border-slate-800/80 flex items-center justify-center">
-              <span className="text-slate-700 font-mono text-xs">SOURCE MEDIA CANVAS</span>
+            /* ── No media placeholder ── */
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-32 h-32 rounded-full border border-slate-800/80 flex items-center justify-center">
+                <Eye className="w-8 h-8 text-slate-700" />
+              </div>
+              <span className="text-slate-600 font-mono text-xs text-center">
+                SOURCE MEDIA CANVAS<br />
+                <span className="text-slate-700">Upload a file to preview it here</span>
+              </span>
             </div>
           )}
 
-          {/* GradCAM Heatmap Overlay */}
-          {showHeatmap && (
+          {/* GradCAM / LIME / FFT Heatmap Overlay — images only */}
+          {showHeatmap && !isVideo && displaySrc && (
             <div className="absolute inset-0 pointer-events-none transition-opacity duration-300">
               {activeLayer === 'gradcam' && (
                 <div className="w-full h-full bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-red-500/40 via-yellow-500/20 to-transparent blur-md animate-pulse" />
@@ -118,7 +151,9 @@ export const HeatmapViewer: React.FC<HeatmapViewerProps> = ({ imageUrl, highRisk
       <div className="flex items-start gap-2 bg-slate-900/40 p-3 rounded-xl border border-slate-800 text-xs text-slate-400">
         <Info className="w-4 h-4 text-cyan-400 flex-shrink-0 mt-0.5" />
         <span>
-          The GradCAM & LIME heatmaps are projected directly over your uploaded source media canvas to pinpoint optical noise profiles and neural classifier activations.
+          {isVideo
+            ? 'Video playback shown above. Temporal frame analysis and deepfake artifact detection applied across sampled frames.'
+            : 'The GradCAM & LIME heatmaps are projected over your uploaded source media to pinpoint optical noise profiles and neural classifier activations.'}
         </span>
       </div>
     </GlassCard>

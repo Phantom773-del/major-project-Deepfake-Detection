@@ -15,6 +15,7 @@ interface AuthContextType {
   socialLogin: (provider: string) => Promise<void>;
   signup: (name: string, email: string, phone: string, password: string) => boolean;
   logout: () => void;
+  resetPassword: (email: string, newPassword: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -100,8 +101,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('phantom_user');
   };
 
+  // Called after token is validated by server — updates password in localStorage
+  const resetPassword = (email: string, newPassword: string): boolean => {
+    const raw = localStorage.getItem('phantom_registered_user');
+    if (raw) {
+      const stored = JSON.parse(raw);
+      if (stored.email === email) {
+        localStorage.setItem('phantom_registered_user', JSON.stringify({ ...stored, password: newPassword }));
+        return true;
+      }
+    }
+    // If no registered user found, create one with defaults
+    localStorage.setItem('phantom_registered_user', JSON.stringify({ name: 'User', email, phone: '', password: newPassword }));
+    return true;
+  };
+
   return (
-    <AuthContext.Provider value={{ isAuthenticated, user, login, socialLogin, signup, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, user, login, socialLogin, signup, logout, resetPassword }}>
       {children}
     </AuthContext.Provider>
   );

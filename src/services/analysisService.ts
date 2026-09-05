@@ -36,33 +36,40 @@ export const analysisService = {
     let report: ForensicReport;
 
     if (file) {
-      // 1. First check if Python ML backend is available at http://localhost:8000/api/v1/analyze
-      try {
-        const formData = new FormData();
-        formData.append('file', file);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const isVideo = file.type.startsWith('video/');
 
-        const res = await fetch('http://localhost:8000/api/v1/analyze', {
-          method: 'POST',
-          body: formData,
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
+      // For videos: skip ML server (images-only endpoint), go straight to client analyzer
+      if (isVideo) {
+        report = await analyzeImageFile(file);
+      } else {
+        // For images: try Python ML backend first, fallback to client-side
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && json.report) {
-            report = json.report;
+          const res = await fetch('http://localhost:8000/api/v1/analyze', {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (res.ok) {
+            const json = await res.json();
+            if (json.success && json.report) {
+              report = json.report;
+            } else {
+              report = await analyzeImageFile(file);
+            }
           } else {
             report = await analyzeImageFile(file);
           }
-        } else {
+        } catch (_e) {
+          // Fallback to advanced client-side forensic binary/EXIF/dimension analyzer
           report = await analyzeImageFile(file);
         }
-      } catch (_e) {
-        // Fallback to advanced client-side forensic binary/EXIF/dimension analyzer
-        report = await analyzeImageFile(file);
       }
     } else {
       const reportId = `RPT-${Math.floor(100000 + Math.random() * 900000)}`;

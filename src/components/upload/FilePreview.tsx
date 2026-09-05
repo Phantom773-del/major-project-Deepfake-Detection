@@ -30,17 +30,25 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ file, onRemove, onStar
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
         {/* Media Preview Area */}
-        <div className="relative rounded-xl overflow-hidden bg-slate-950 border border-slate-800 aspect-video flex items-center justify-center">
+        <div className={`relative rounded-xl overflow-hidden bg-slate-950 border ${isVideo ? 'border-cyan-500/40 shadow-[0_0_24px_rgba(6,182,212,0.15)]' : 'border-slate-800'} aspect-video flex items-center justify-center`}>
           {previewUrl && (
             isVideo ? (
-              <video src={previewUrl} controls className="max-h-full max-w-full object-contain" />
+              <video
+                src={previewUrl}
+                controls
+                autoPlay
+                muted
+                loop
+                className="w-full h-full object-contain"
+                style={{ maxHeight: '320px' }}
+              />
             ) : (
               <img src={previewUrl} alt={file.name} className="max-h-full max-w-full object-contain" />
             )
           )}
           <div className="absolute top-3 left-3 bg-slate-900/80 backdrop-blur-md px-2.5 py-1 rounded-md text-xs font-mono text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5">
             {isVideo ? <FileVideo className="w-3.5 h-3.5" /> : <FileImage className="w-3.5 h-3.5" />}
-            <span>{isVideo ? 'VIDEO FILE' : 'IMAGE FILE'}</span>
+            <span>{isVideo ? 'VIDEO PREVIEW — PLAYING' : 'IMAGE FILE'}</span>
           </div>
         </div>
 

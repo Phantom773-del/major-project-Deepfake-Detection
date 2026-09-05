@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Shield, Mail, ArrowRight, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import apiClient from '../services/api';
 
 export const ForgotPasswordPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -15,20 +14,32 @@ export const ForgotPasswordPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const response = await apiClient.post('/auth/forgot-password', { email });
-      setIsLoading(false);
-      setIsSubmitted(true);
-      if (response.data.isMock) {
-        toast.success('Simulation: Check server console for the link!');
+      // Dynamically use the current host's IP so it works from PC and mobile
+      const serverBase = `${window.location.protocol}//${window.location.hostname}:8000`;
+      const response = await fetch(`${serverBase}/api/v1/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setIsLoading(false);
+        setIsSubmitted(true);
+        toast.success('Password reset email sent! Check your inbox.');
       } else {
-        toast.success('Reset link sent to your email!');
+        setIsLoading(false);
+        toast.error(data.message || 'Failed to send reset email. Please try again.');
       }
     } catch (error: any) {
       setIsLoading(false);
-      const errorMsg = error.response?.data?.message || 'Failed to send reset link. Make sure the backend server is running.';
-      toast.error(errorMsg);
+      toast.error('Could not connect to server. Make sure the server is running on port 8000.');
+      console.error('Forgot password error:', error);
     }
   };
+
 
   return (
     <div className="flex-1 flex flex-col justify-center items-center relative overflow-hidden bg-transparent px-4 py-8">

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { DropZone } from '../components/upload/DropZone';
+import { FilePreview } from '../components/upload/FilePreview';
 import { UploadProgress } from '../components/upload/UploadProgress';
 import { useAnalysisContext } from '../contexts/AnalysisContext';
 import { uploadService } from '../services/uploadService';
@@ -10,43 +11,55 @@ export const UploadPage: React.FC = () => {
   const navigate = useNavigate();
   const { setJobId, setFileName, setPreviewUrl, setStatus, resetAnalysis, setSelectedFile: setContextFile } = useAnalysisContext();
 
-
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  const handleFileSelect = async (file: File) => {
+  // Called when user drops / selects a file — show preview, do NOT auto-start
+  const handleFileSelect = (file: File) => {
     const validation = uploadService.validateFile(file);
     if (!validation.valid) {
       setError(validation.error || 'Invalid file');
       setSelectedFile(null);
       return;
     }
-
     setError(null);
     setSelectedFile(file);
+  };
 
-    // Auto-start upload process
+  // Called when user clicks "Initiate Forensic Pipeline" in FilePreview
+  const handleStartAnalysis = async () => {
+    if (!selectedFile) return;
+
     resetAnalysis();
-    setContextFile(file);
+    setContextFile(selectedFile);
     setUploading(true);
-    setFileName(file.name);
+    setFileName(selectedFile.name);
     setStatus('uploading');
 
     // Create object URL and base64 for persistent preview in HeatmapViewer
-    const objUrl = URL.createObjectURL(file);
+    const objUrl = URL.createObjectURL(selectedFile);
     setPreviewUrl(objUrl);
 
     const reader = new FileReader();
     reader.onload = async () => {
-      const base64 = reader.result as string;
-      sessionStorage.setItem('current_upload_img', base64);
+      try {
+        const base64 = reader.result as string;
+        // sessionStorage has ~5MB limit — skip for large files (videos)
+        if (base64.length < 4 * 1024 * 1024) {
+          sessionStorage.setItem('current_upload_img', base64);
+        } else {
+          sessionStorage.removeItem('current_upload_img');
+        }
+      } catch {
+        sessionStorage.removeItem('current_upload_img');
+      }
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(selectedFile);
 
     try {
-      const res = await uploadService.uploadFile(file, (p) => setProgress(p));
+      const res = await uploadService.uploadFile(selectedFile, (p) => setProgress(p));
       setJobId(res.jobId);
       setStatus('processing');
       navigate('/analysis');
@@ -73,23 +86,32 @@ export const UploadPage: React.FC = () => {
 
       {uploading ? (
         <UploadProgress progress={progress} fileName={selectedFile?.name || ''} />
+      ) : selectedFile ? (
+        /* Show FilePreview with video playback; user must click button to start */
+        <FilePreview
+          file={selectedFile}
+          onRemove={() => { setSelectedFile(null); setError(null); }}
+          onStartAnalysis={handleStartAnalysis}
+        />
       ) : (
         <DropZone onFileSelect={handleFileSelect} error={error} />
       )}
 
       {/* Forensic Rules Box */}
-      <div className="glass-card p-5 border border-slate-800 space-y-3">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white">
-          <Info className="w-4 h-4 text-cyan-400" />
-          <span>Forensic Processing Guidelines</span>
+      {!selectedFile && !uploading && (
+        <div className="glass-card p-5 border border-slate-800 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <Info className="w-4 h-4 text-cyan-400" />
+            <span>Forensic Processing Guidelines</span>
+          </div>
+          <ul className="text-xs text-slate-400 space-y-1.5 list-disc list-inside font-mono">
+            <li>Supported Images: JPEG, PNG, WebP, TIFF, BMP (Max 50MB)</li>
+            <li>Supported Videos: MP4, AVI, MOV, MKV (Max 500MB)</li>
+            <li>Original files with uncompressed EXIF metadata yield higher confidence scores</li>
+            <li>Files are processed in isolated memory and automatically purged post-analysis</li>
+          </ul>
         </div>
-        <ul className="text-xs text-slate-400 space-y-1.5 list-disc list-inside font-mono">
-          <li>Supported Images: JPEG, PNG, WebP, TIFF, BMP (Max 50MB)</li>
-          <li>Supported Videos: MP4, AVI, MOV, MKV (Max 500MB)</li>
-          <li>Original files with uncompressed EXIF metadata yield higher confidence scores</li>
-          <li>Files are processed in isolated memory and automatically purged post-analysis</li>
-        </ul>
-      </div>
+      )}
     </div>
   );
 };
