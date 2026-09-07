@@ -228,7 +228,7 @@ export const ResetPasswordPage: React.FC = () => {
                       placeholder="Repeat your password"
                     />
                     <button
-                    
+
                       type="button"
                       onClick={() => setShowConfirm((v) => !v)}
                       className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-500 hover:text-slate-300"
