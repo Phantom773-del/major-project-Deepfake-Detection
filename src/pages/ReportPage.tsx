@@ -35,7 +35,7 @@ export const ReportPage: React.FC = () => {
   const handleDownload = () => {
     if (!report) return;
     try {
-      toast.success('Generating and downloading Forensic PDF...');
+      toast.success('Opening Forensic PDF report...');
       exportReportToPDF(report);
     } catch (err) {
       console.error(err);

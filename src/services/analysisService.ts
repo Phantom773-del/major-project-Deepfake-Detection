@@ -14,12 +14,13 @@ export const analysisService = {
   ): Promise<string> {
     const stages = ANALYSIS_STAGES.map(s => ({ ...s }));
 
+    // Progress through pipeline animation smoothly
     for (let i = 0; i < stages.length; i++) {
       stages[i].status = 'active';
       stages[i].progress = 0;
       onStageUpdate([...stages]);
 
-      const stageTime = 60 + Math.random() * 100;
+      const stageTime = 50 + Math.random() * 80;
       for (let p = 0; p <= 100; p += 25) {
         await delay(stageTime);
         stages[i].progress = Math.min(p, 100);
@@ -30,46 +31,54 @@ export const analysisService = {
       stages[i].progress = 100;
       onStageUpdate([...stages]);
 
-      await delay(80);
+      await delay(60);
     }
 
     let report: ForensicReport;
 
     if (file) {
-      const isVideo = file.type.startsWith('video/');
+      const isVideo = file.type.startsWith('video/') || /\.(mp4|avi|mov|mkv|webm)$/i.test(file.name);
 
-      // For videos: skip ML server (images-only endpoint), go straight to client analyzer
-      if (isVideo) {
-        report = await analyzeImageFile(file);
-      } else {
-        // For images: try Python ML backend first, fallback to client-side
-        try {
-          const formData = new FormData();
-          formData.append('file', file);
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
+      // Call the unified Biometric Liveness & Forensics FastAPI backend
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
 
-          const res = await fetch('http://localhost:8000/api/v1/analyze', {
-            method: 'POST',
-            body: formData,
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
+        // Videos take longer for rPPG pulse extraction, allow up to 45s; images up to 15s
+        const controller = new AbortController();
+        const timeoutMs = isVideo ? 45000 : 15000;
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-          if (res.ok) {
-            const json = await res.json();
-            if (json.success && json.report) {
-              report = json.report;
-            } else {
-              report = await analyzeImageFile(file);
+        const res = await fetch('http://localhost:8000/api/v1/analyze', {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.report) {
+            report = json.report;
+
+            // Preserve local image preview if available
+            const uploadedImg = sessionStorage.getItem('current_upload_img');
+            if (uploadedImg && (!report.explainableAI || !report.explainableAI.imageUrl)) {
+              report.explainableAI = {
+                ...(report.explainableAI || { highRiskRegions: [] }),
+                imageUrl: uploadedImg,
+              };
             }
           } else {
             report = await analyzeImageFile(file);
           }
-        } catch (_e) {
-          // Fallback to advanced client-side forensic binary/EXIF/dimension analyzer
+        } else {
+          console.warn('Backend returned non-200 status, falling back to local analyzer');
           report = await analyzeImageFile(file);
         }
+      } catch (err) {
+        console.warn('Backend unavailable, using client-side forensic fallback:', err);
+        report = await analyzeImageFile(file);
       }
     } else {
       const reportId = `RPT-${Math.floor(100000 + Math.random() * 900000)}`;
