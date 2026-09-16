@@ -49,7 +49,8 @@ export const analysisService = {
         const timeoutMs = isVideo ? 45000 : 15000;
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        const res = await fetch('http://localhost:8000/api/v1/analyze', {
+        const apiBase = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+        const res = await fetch(`${apiBase}/api/v1/analyze`, {
           method: 'POST',
           body: formData,
           signal: controller.signal,
